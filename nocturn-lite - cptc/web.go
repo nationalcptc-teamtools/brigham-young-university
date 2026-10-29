@@ -23,7 +23,7 @@ import (
 // command, with the command's output streamed back live. Running is gated by
 // the active project's scope exactly like ctrl+r in the TUI.
 const (
-	webTitle    = "NocTurn Lite"
+	webTitle    = "NocTurn-Lite"
 	defaultPort = 7702
 )
 
