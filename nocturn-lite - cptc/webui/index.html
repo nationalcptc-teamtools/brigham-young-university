@@ -1,0 +1,3220 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{TITLE}}</title>
+<!--
+  Browser view of the pentest command builder. The Go binary serves this page
+  with --web, filling in the TITLE and CONFIG placeholders (title, the whole
+  tool catalog, and the saved projects as JSON). Pick a tool on the left, fill
+  its flags on the right, then copy or run the assembled command — output
+  streams from POST /api/run. Running is gated server-side by the active
+  project's out-of-scope list, exactly like the TUI's ctrl+r.
+-->
+<style>
+  /* Tokyo Night theme. Dark (Night) is the default; an explicit light OS
+     preference gets the matching Tokyo Night Day variant. */
+  :root {
+    --bg: #1a1b26;
+    --panel: #24283b;
+    --border: #2f334d;
+    --hover: #292e42;
+    --sel: rgba(122, 162, 247, 0.18);
+    --fg: #a9b1d6;
+    --fg-strong: #c0caf5;
+    --dim: #565f89;
+    --accent: #7aa2f7;
+    --accent-soft: #7dcfff;
+    --banner: #3d59a1;
+    --code-bg: #1f2335;
+    --code-fg: #c0caf5;
+    --ok: #9ece6a;
+    --warn: #e0af68;
+    --danger: #f7768e;
+    --mono: ui-monospace, "Cascadia Code", "JetBrains Mono", Menlo, Consolas, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    color-scheme: dark;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #e1e2e7;
+      --panel: #ffffff;
+      --border: #c4c8da;
+      --hover: #d9dbe4;
+      --sel: rgba(46, 125, 233, 0.14);
+      --fg: #343b58;
+      --fg-strong: #1a1b26;
+      --dim: #848cb5;
+      --accent: #2e7de9;
+      --accent-soft: #007197;
+      --banner: #2e7de9;
+      --code-bg: #e9e9ed;
+      --code-fg: #343b58;
+      --ok: #587539;
+      --warn: #8c6c3e;
+      --danger: #f52a65;
+      color-scheme: light;
+    }
+  }
+
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    display: flex;
+    flex-direction: column;
+    background: var(--bg);
+    color: var(--fg);
+    font: 15px/1.6 var(--sans);
+  }
+
+  /* ── banner ─────────────────────────────────────────────────────────── */
+  .banner {
+    flex: none;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 8px 16px;
+    background: var(--banner);
+    color: #fff;
+  }
+  .brand { font-weight: 700; letter-spacing: 0.02em; }
+  /* Nocturn wordmark + fanned-arrow mark, sits left of the catalog tabs */
+  .bannerleft { display: flex; align-items: center; gap: 18px; min-width: 0; }
+  .brandmark {
+    display: flex; align-items: center; gap: 9px;
+    color: #fff; text-decoration: none; flex: none;
+    padding-right: 18px; margin-right: 0;
+    border-right: 1px solid rgba(255, 255, 255, 0.22);
+  }
+  .brandmark .qmark {
+    width: 22px; height: 22px; flex: none;
+    filter: drop-shadow(0 0 6px rgba(255, 255, 255, 0.28));
+  }
+  .brandmark .wm { font: 800 17px/1 var(--sans); letter-spacing: 0.03em; }
+  .brandmark:hover .qmark { filter: drop-shadow(0 0 9px rgba(255, 255, 255, 0.5)); }
+  /* mode toggle (top-left): click to switch catalogs */
+  .modes { display: flex; gap: 6px; align-items: center; }
+  .modetab {
+    padding: 4px 14px;
+    border: 1px solid rgba(255, 255, 255, 0.35);
+    border-radius: 999px;
+    background: transparent;
+    color: #fff;
+    font: 700 13px/1.2 var(--sans);
+    letter-spacing: 0.02em;
+    cursor: pointer;
+    opacity: 0.8;
+  }
+  .modetab:hover { opacity: 1; background: rgba(255, 255, 255, 0.12); }
+  .modetab.active { background: #fff; color: var(--banner); border-color: #fff; opacity: 1; }
+  .keys { font-size: 12.5px; opacity: 0.9; }
+  kbd {
+    font: 11.5px var(--mono);
+    padding: 1px 5px;
+    border-radius: 4px;
+    background: rgba(255, 255, 255, 0.18);
+  }
+
+  /* ── layout ─────────────────────────────────────────────────────────── */
+  /* Builder (.layout) and terminal dock (#termview) sit side by side in .main. */
+  .main {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: row;
+  }
+  .layout {
+    flex: 1;
+    min-width: 0;
+    min-height: 0;
+    display: grid;
+    grid-template-columns: minmax(180px, 230px) 1fr;
+  }
+
+  .sidebar {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    background: var(--panel);
+    border-right: 1px solid var(--border);
+  }
+  .search { padding: 12px; border-bottom: 1px solid var(--border); }
+  #filter {
+    width: 100%;
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg);
+    color: var(--fg);
+    font: inherit;
+  }
+  #filter:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: transparent; }
+  #list { flex: 1; overflow: auto; padding: 0 0 12px; }
+  .cat {
+    position: sticky;
+    top: 0;
+    padding: 12px 16px 4px;
+    background: var(--panel);
+    color: var(--accent-soft);
+    font-size: 11.5px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  .item {
+    display: block;
+    width: 100%;
+    text-align: left;
+    padding: 6px 16px 6px 13px;
+    border: 0;
+    border-left: 3px solid transparent;
+    background: none;
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+  }
+  .item:hover { background: var(--hover); }
+  .item.sel { background: var(--sel); border-left-color: var(--accent); }
+  .item .name { display: block; font: 13.5px/1.45 var(--mono); color: var(--fg-strong); }
+  .item.sel .name { color: var(--accent); }
+  .item .sum {
+    display: block;
+    overflow: hidden;
+    color: var(--dim);
+    font-size: 12.5px;
+    line-height: 1.4;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+  .empty { padding: 16px; color: var(--dim); }
+  .count { padding: 8px 16px; border-top: 1px solid var(--border); color: var(--dim); font-size: 12px; }
+
+  /* ── detail ─────────────────────────────────────────────────────────── */
+  /* The right-hand column is split vertically: the configurator (#detail) on
+     top, and a persistent Output panel at the bottom. The output panel lives
+     outside the per-tool render, so its contents survive switching tools and
+     switching catalogs (setup / web / AD / linux) — only "Clear output" empties
+     it. */
+  .workarea { min-height: 0; display: flex; flex-direction: column; }
+  /* The whole configurator scrolls as one: flags then the command box at the
+     end. Scroll down to reach the command and Run/Copy after filling it in. */
+  #detail { flex: 1 1 auto; min-height: 0; overflow: auto; outline: none; display: flex; flex-direction: column; }
+  article { flex: 1; max-width: 920px; width: 100%; padding: 20px 32px 40px; }
+
+  #outputpanel {
+    flex: none;
+    height: clamp(160px, 34vh, 520px);
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    border-top: 1px solid var(--border);
+    background: var(--panel);
+  }
+  /* The ID rule above sets display:flex, which beats the `hidden` attribute's
+     default display:none — so an explicit rule is needed to hide the panel
+     (e.g. in Reverse Shells mode). */
+  #outputpanel[hidden] { display: none; }
+  .outbar {
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 14px;
+    border-bottom: 1px solid var(--border);
+  }
+  .outbar .spacer { flex: 1; }
+  .outbar h2 { margin: 0; font-size: 14px; }
+
+  /* project bar */
+  .projbar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    padding: 10px 32px;
+    border-bottom: 1px solid var(--border);
+    background: var(--panel);
+    font-size: 13px;
+  }
+  .projbar label { color: var(--dim); }
+  .projbar select {
+    padding: 5px 8px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg);
+    color: var(--fg);
+    font: inherit;
+  }
+  .projbar .scope { color: var(--dim); font-size: 12.5px; }
+  .projbar .refresh {
+    margin-left: auto;
+    padding: 4px 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--panel);
+    color: var(--dim);
+    font: 12px var(--sans);
+    cursor: pointer;
+  }
+  .projbar .refresh:hover { color: var(--accent); border-color: var(--accent); }
+
+  .crumb { color: var(--accent-soft); font-size: 12px; font-style: italic; letter-spacing: 0.08em; text-transform: uppercase; }
+  h1 { margin: 2px 0 4px; color: var(--accent); font: 600 24px/1.3 var(--mono); }
+  .summary { margin: 0 0 4px; color: var(--dim); }
+  h2 {
+    margin: 24px 0 8px;
+    color: var(--accent-soft);
+    font-size: 12.5px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  /* flag form */
+  .flags { display: flex; flex-direction: column; gap: 2px; }
+  .flag {
+    display: grid;
+    grid-template-columns: minmax(0, 260px) 1fr;
+    gap: 12px;
+    align-items: start;
+    padding: 8px 10px;
+    border-radius: 7px;
+  }
+  .flag:hover { background: var(--hover); }
+  .flag .label { font: 13px/1.5 var(--mono); color: var(--fg-strong); overflow-wrap: anywhere; }
+  .flag .label .fl { color: var(--accent-soft); }
+  .flag .req { color: var(--danger); }
+  .flag .fdesc { margin: 2px 0 0; color: var(--dim); font-size: 12px; font-family: var(--sans); }
+  .flag .control input[type=text],
+  .flag .control select {
+    width: 100%;
+    padding: 6px 9px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg);
+    color: var(--fg);
+    font: 13px var(--mono);
+  }
+  .flag .control input[type=text].missing { border-color: var(--danger); }
+  .flag .control input:focus, .flag .control select:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: transparent; }
+  .flag .control label.sw { display: inline-flex; align-items: center; gap: 8px; color: var(--dim); font-size: 13px; cursor: pointer; }
+  .noflags { color: var(--dim); font-style: italic; }
+
+  /* key-info filter toggle, above the command box. */
+  .grepfilter {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    margin: 0 0 8px; color: var(--dim); font-size: 13px; cursor: pointer;
+  }
+  .grepfilter code {
+    font: 12.5px/1.4 var(--mono); color: var(--code-fg);
+    background: var(--code-bg); border: 1px solid var(--border);
+    border-radius: 6px; padding: 2px 6px; overflow-wrap: anywhere;
+  }
+
+  /* command box — part of the normal scroll flow, at the end of the flags. */
+  .cmd {
+    position: relative;
+    margin: 0;
+    padding: 14px 16px;
+    overflow-x: auto;
+    background: var(--code-bg);
+    color: var(--code-fg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font: 13.5px/1.55 var(--mono);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+  .missmsg { margin: 6px 0 0; color: var(--danger); font-size: 12.5px; }
+  .actions { display: flex; gap: 8px; margin-top: 10px; align-items: center; flex-wrap: wrap; }
+  button.act {
+    padding: 7px 14px;
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    background: var(--panel);
+    color: var(--fg);
+    font: 13px var(--sans);
+    cursor: pointer;
+  }
+  button.act:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+  button.act.run { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.act.run:hover:not(:disabled) { color: #fff; opacity: 0.92; }
+  button.act.stop { background: var(--danger); border-color: var(--danger); color: #fff; }
+  button.act:disabled { opacity: 0.5; cursor: not-allowed; }
+  .actmsg { font-size: 12.5px; color: var(--dim); }
+  .actmsg.warn { color: var(--warn); }
+
+  /* output console */
+  h2.outhead { display: flex; align-items: center; gap: 10px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--dim); }
+  .dot.live { background: var(--ok); box-shadow: 0 0 0 0 rgba(158,206,106,0.5); animation: pulse 1.2s infinite; }
+  @keyframes pulse { to { box-shadow: 0 0 0 6px rgba(158,206,106,0); } }
+  #console {
+    flex: 1;
+    margin: 0;
+    padding: 12px 14px;
+    min-height: 0;
+    overflow: auto;
+    background: #16161e;
+    color: #c0caf5;
+    font: 12.5px/1.5 var(--mono);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+  #console .cmdline { color: #7dcfff; }
+  #console .err { color: #f7768e; }
+  #console .done { color: #9ece6a; }
+  #console .hint { color: #565f89; font-style: italic; }
+
+  /* project controls + modal */
+  .projbar .pbtn {
+    padding: 4px 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--panel);
+    color: var(--dim);
+    font: 12px var(--sans);
+    cursor: pointer;
+  }
+  .projbar .pbtn:hover { color: var(--accent); border-color: var(--accent); }
+  .projbar .pbtn.danger:hover { color: var(--danger); border-color: var(--danger); }
+  .projbar .pbtn:disabled { opacity: 0.45; cursor: not-allowed; }
+  .projbar .pbtn:disabled:hover { color: var(--dim); border-color: var(--border); }
+  .projbar .spacer { margin-left: auto; }
+
+  .modal {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+    background: rgba(8, 14, 16, 0.55);
+    z-index: 50;
+  }
+  .modal[hidden] { display: none; }
+  .dialog {
+    width: 100%;
+    max-width: 460px;
+    max-height: 85vh;
+    overflow: auto;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px 22px;
+    box-shadow: 0 16px 48px rgba(0, 0, 0, 0.35);
+  }
+  .dialog h3 { margin: 0 0 14px; color: var(--accent); font: 600 17px/1.3 var(--sans); }
+  .dialog h4 {
+    margin: 16px 0 6px;
+    color: var(--accent-soft);
+    font-size: 11.5px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  .dialog .row { display: flex; gap: 8px; }
+  .dialog input[type=text] {
+    flex: 1;
+    width: 100%;
+    padding: 7px 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg);
+    color: var(--fg);
+    font: 13px var(--mono);
+  }
+  .dialog input:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: transparent; }
+  .scopelist { list-style: none; margin: 6px 0 0; padding: 0; }
+  .scopelist li {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 0;
+    font: 13px var(--mono);
+    color: var(--fg);
+  }
+  .scopelist li .x {
+    margin-left: auto;
+    border: 0;
+    background: none;
+    color: var(--dim);
+    font-size: 15px;
+    line-height: 1;
+    cursor: pointer;
+  }
+  .scopelist li .x:hover { color: var(--danger); }
+  .scopelist .none { color: var(--dim); font-style: italic; font-family: var(--sans); font-size: 12.5px; }
+  .dialog .foot { display: flex; gap: 8px; justify-content: flex-end; margin-top: 18px; }
+  .dialog .err { margin: 8px 0 0; color: var(--danger); font-size: 12.5px; }
+
+  #toast {
+    position: fixed;
+    bottom: 20px;
+    left: 50%;
+    padding: 8px 16px;
+    border-radius: 999px;
+    background: var(--banner);
+    color: #fff;
+    font-size: 13px;
+    opacity: 0;
+    pointer-events: none;
+    transform: translate(-50%, 12px);
+    transition: opacity 0.15s, transform 0.15s;
+  }
+  #toast.show { opacity: 1; transform: translate(-50%, 0); }
+
+  /* ── terminal toggle (banner) ─────────────────────────────────────────── */
+  .bannerright { display: flex; align-items: center; gap: 14px; }
+  .termtoggle {
+    padding: 4px 12px;
+    border: 1px solid rgba(255, 255, 255, 0.35);
+    border-radius: 999px;
+    background: transparent;
+    color: #fff;
+    font: 700 13px/1.2 var(--sans);
+    letter-spacing: 0.02em;
+    cursor: pointer;
+    opacity: 0.85;
+  }
+  .termtoggle:hover { opacity: 1; background: rgba(255, 255, 255, 0.12); }
+  .termtoggle[aria-pressed="true"] { background: #fff; color: var(--banner); border-color: #fff; opacity: 1; }
+
+  /* ── terminal workspace ───────────────────────────────────────────────── */
+  /* The terminal docks to the right of the command builder rather than
+     replacing it, so both are usable at once. #termview keeps a fixed
+     (draggable) width while .layout flexes to fill the rest. */
+  #termview {
+    position: relative;
+    flex: none;
+    width: var(--term-w, 42vw);
+    min-width: 220px;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg);
+    border-left: 2px solid var(--border);
+  }
+  #termview[hidden] { display: none; }
+
+  /* Reverse Shells mode docks the terminal along the BOTTOM (horizontal split)
+     so the command builder keeps its full width above it, rather than the side
+     dock used elsewhere. Mirrors the narrow-screen stacking: the dock takes a
+     draggable height and the grip resizes vertically. */
+  .main.revdock { flex-direction: column; }
+  .main.revdock #termview {
+    width: auto !important;
+    height: var(--term-h, 42vh);
+    min-width: 0;
+    min-height: 140px;
+    border-left: 0;
+    border-top: 2px solid var(--border);
+  }
+  .main.revdock .termgrip {
+    left: 0; right: 0; top: -4px; bottom: auto;
+    width: auto; height: 9px; cursor: row-resize;
+  }
+  .main.revdock .termgrip::before { width: 46px; height: 3px; }
+
+  /* Draggable vertical divider between the builder and the terminal dock.
+     Overlaid on the dock's left edge so it works regardless of pane layout. */
+  .termgrip {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: -4px;
+    width: 9px;
+    z-index: 5;
+    cursor: col-resize;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    touch-action: none;
+  }
+  .termgrip::before {
+    content: "";
+    width: 3px;
+    height: 46px;
+    border-radius: 3px;
+    background: var(--border);
+  }
+  .termgrip:hover::before { background: var(--accent); }
+  .termbar {
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    padding: 8px 14px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+  }
+  .termbar .termtitle { font-weight: 700; color: var(--accent-soft); letter-spacing: 0.04em; }
+  .termbar .spacer { margin-left: auto; }
+  .tbtn, .colbtn {
+    padding: 4px 11px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--panel);
+    color: var(--fg);
+    font: 12.5px var(--sans);
+    cursor: pointer;
+  }
+  .tbtn:hover, .colbtn:hover { color: var(--accent); border-color: var(--accent); }
+  .termcols, .termfont { display: inline-flex; align-items: center; gap: 4px; }
+  .termcols-label { color: var(--dim); font-size: 12px; margin-right: 2px; }
+  .colbtn { min-width: 30px; padding: 4px 8px; }
+  .colbtn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+  #termpanes {
+    flex: 1;
+    min-height: 0;
+    display: grid;
+    grid-template-columns: repeat(var(--cols, 2), 1fr);
+    grid-auto-rows: 1fr;
+    gap: 8px;
+    padding: 8px;
+  }
+  .pane {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+    background: #16161e;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  .pane.focused { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+  .pane-head {
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 10px;
+    background: #1f2335;
+    border-bottom: 1px solid var(--border);
+    color: #565f89;
+    font: 12px var(--sans);
+  }
+  .pane-head .pane-name {
+    background: none;
+    border: 0;
+    color: #c0caf5;
+    font: 12.5px var(--mono);
+    padding: 1px 4px;
+    border-radius: 4px;
+    min-width: 40px;
+    flex: 1;
+  }
+  .pane-head .pane-name:focus { outline: 1px solid var(--accent); background: rgba(0,0,0,0.3); }
+  .pane-head .pane-dot { width: 7px; height: 7px; border-radius: 50%; background: #3b4261; flex: none; }
+  .pane-head .pane-dot.live { background: var(--ok); }
+  .pane-head .pane-dot.dead { background: var(--danger); }
+  .pane-head .pane-x {
+    flex: none;
+    border: 0;
+    background: none;
+    color: #565f89;
+    font-size: 15px;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0 2px;
+  }
+  .pane-head .pane-x:hover { color: var(--danger); }
+  .pane-screen {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    padding: 6px 8px;
+    color: #c0caf5;
+    font: 13px/1.35 var(--mono);
+    white-space: pre;
+    outline: none;
+    cursor: text;
+  }
+  .pane-screen b { font-weight: 700; }
+  .pane-screen u { text-decoration: underline; }
+  .pane-screen .cur { background: #c0caf5; color: #16161e; }
+  .term-empty { padding: 24px; color: var(--dim); font: 13px var(--sans); grid-column: 1 / -1; }
+
+  /* ── application map (Obsidian-style canvas) ─────────────────────────────── */
+  #mapview { position: relative; flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; background: var(--bg); }
+  #mapview[hidden] { display: none; }
+
+  .maptoolbar {
+    flex: none; display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--border); font-size: 13px;
+  }
+  .maptoolbar .maptitle { font-weight: 700; color: var(--accent-soft); letter-spacing: 0.04em; }
+  .maptoolbar label { color: var(--dim); }
+  .maptoolbar select {
+    padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px;
+    background: var(--bg); color: var(--fg); font: inherit;
+  }
+  .maptoolbar .mapcount { color: var(--dim); font-size: 12.5px; }
+  .maptoolbar .spacer { margin-left: auto; }
+  .maptoolbar .mbtn {
+    padding: 4px 11px; border: 1px solid var(--border); border-radius: 6px;
+    background: var(--panel); color: var(--fg); font: 12.5px var(--sans); cursor: pointer;
+  }
+  .maptoolbar .mbtn:hover { color: var(--accent); border-color: var(--accent); }
+  .maptoolbar .mbtn.danger:hover { color: var(--danger); border-color: var(--danger); }
+
+  .mapcanvas {
+    position: relative; flex: 1; min-height: 0; overflow: hidden; cursor: grab;
+    background: radial-gradient(circle, var(--border) 1px, transparent 1.3px) 0 0 / 24px 24px;
+  }
+  .mapcanvas.panning { cursor: grabbing; }
+  .mapworld { position: absolute; top: 0; left: 0; width: 1px; height: 1px; transform-origin: 0 0; }
+  .mapedges { position: absolute; top: 0; left: 0; overflow: visible; pointer-events: none; }
+  .mapedges path { fill: none; stroke: var(--dim); stroke-width: 1.5; opacity: 0.55; }
+
+  .mnode {
+    position: absolute; width: 190px; box-sizing: border-box; padding: 8px 10px 9px;
+    background: var(--panel); border: 1px solid var(--border); border-left: 3px solid var(--dim);
+    border-radius: 9px; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.22); cursor: grab; user-select: none;
+    touch-action: none;
+  }
+  .mnode:hover { border-color: var(--accent); }
+  .mnode.dragging { cursor: grabbing; z-index: 10; box-shadow: 0 8px 22px rgba(0, 0, 0, 0.4); }
+  .mnode .mtype { font: 10.5px var(--sans); letter-spacing: 0.08em; text-transform: uppercase; color: var(--dim); margin-bottom: 2px; }
+  .mnode .mlabel { font: 13px/1.4 var(--mono); color: var(--fg-strong); overflow-wrap: anywhere; }
+  .mnode .msub { margin-top: 3px; font: 11.5px var(--sans); color: var(--dim); overflow-wrap: anywhere; }
+  .mnode .mx {
+    position: absolute; top: 2px; right: 4px; border: 0; background: none; color: var(--dim);
+    font-size: 14px; line-height: 1; cursor: pointer; opacity: 0;
+  }
+  .mnode:hover .mx { opacity: 1; }
+  .mnode .mx:hover { color: var(--danger); }
+  .mnode.type-root      { border-left-color: var(--accent); }
+  .mnode.type-domain    { border-left-color: #7aa2f7; }
+  .mnode.type-subdomain { border-left-color: #bb9af7; }
+  .mnode.type-host      { border-left-color: var(--accent-soft); }
+  .mnode.type-port      { border-left-color: #73daca; }
+  .mnode.type-endpoint  { border-left-color: var(--ok); }
+  .mnode.type-param     { border-left-color: var(--warn); }
+  .mnode.type-user      { border-left-color: #ff9e64; }
+  .mnode.type-share     { border-left-color: #7dcfff; }
+  .mnode.type-cred      { border-left-color: #ffc777; }
+  .mnode.type-finding   { border-left-color: var(--danger); }
+  .mnode.type-tech      { border-left-color: #9ece6a; }
+  .mnode.type-note      { border-left-color: var(--dim); }
+
+  .mapempty {
+    position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center;
+    justify-content: center; gap: 10px; color: var(--dim); font-size: 13.5px; text-align: center;
+    padding: 24px; pointer-events: none;
+  }
+  .mapempty .big { font-size: 15px; color: var(--fg-strong); }
+  .maplegend {
+    position: absolute; bottom: 10px; left: 10px; display: flex; gap: 12px; flex-wrap: wrap;
+    padding: 7px 11px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+    font-size: 11.5px; color: var(--dim); pointer-events: none; opacity: 0.92;
+  }
+  .maplegend span { display: inline-flex; align-items: center; gap: 5px; }
+  .maplegend i { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
+
+  @media (max-width: 760px) {
+    .keys { display: none; }
+    .layout { grid-template-columns: 1fr; grid-template-rows: 34vh 1fr; }
+    .sidebar { border-right: 0; border-bottom: 1px solid var(--border); }
+    .projbar, article { padding-left: 16px; padding-right: 16px; }
+    .flag { grid-template-columns: 1fr; gap: 4px; }
+    #termpanes { grid-template-columns: 1fr; }
+    /* Too narrow for a side-by-side split: stack the dock below instead. */
+    .main { flex-direction: column; }
+    #termview {
+      width: auto !important;
+      height: var(--term-h, 42vh);
+      min-width: 0;
+      min-height: 120px;
+      border-left: 0;
+      border-top: 2px solid var(--border);
+    }
+    .termgrip {
+      left: 0;
+      right: 0;
+      top: -4px;
+      bottom: auto;
+      width: auto;
+      height: 9px;
+      cursor: row-resize;
+    }
+    .termgrip::before { width: 46px; height: 3px; }
+  }
+</style>
+</head>
+<body>
+<header class="banner">
+  <div class="bannerleft">
+    <a class="brandmark" href="/" aria-label="Nocturn home" title="Nocturn — your offensive toolkit, ready to go">
+      <svg class="qmark" viewBox="0 0 32 32" aria-hidden="true" fill="none"
+           stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round">
+        <g transform="translate(16 26)">
+          <g transform="rotate(-22)"><path d="M0 0 L0 -19"/><path d="M-4.2 -14.5 L0 -19 L4.2 -14.5"/></g>
+          <g><path d="M0 0 L0 -22"/><path d="M-4.2 -17.5 L0 -22 L4.2 -17.5"/></g>
+          <g transform="rotate(22)"><path d="M0 0 L0 -19"/><path d="M-4.2 -14.5 L0 -19 L4.2 -14.5"/></g>
+        </g>
+      </svg>
+      <span class="wm">Nocturn</span>
+    </a>
+    <div class="modes" id="modes" role="tablist" aria-label="Catalog"></div>
+  </div>
+  <div class="bannerright">
+    <button type="button" class="termtoggle" id="termtoggle" aria-pressed="false" title="Open an interactive split-screen terminal">⌗ Terminal</button>
+  </div>
+</header>
+
+<!-- Builder and terminal sit side by side in this row. -->
+<div class="main">
+<div class="layout">
+  <aside class="sidebar">
+    <div class="search">
+      <input id="filter" type="search" placeholder="Filter… (press /)" autocomplete="off" spellcheck="false" aria-label="Filter tools">
+    </div>
+    <nav id="list" aria-label="Tools"></nav>
+    <div id="count" class="count"></div>
+  </aside>
+  <div class="workarea">
+    <main id="detail" tabindex="-1"></main>
+    <!-- Persistent output panel. Rendered once and never torn down, so streamed
+         command output stays put when you switch tools or catalogs; only the
+         Clear output button empties it. -->
+    <section id="outputpanel" aria-label="Command output">
+      <div class="outbar">
+        <h2 class="outhead"><span class="dot" id="dot"></span> Output</h2>
+        <span class="actmsg" id="actmsg"></span>
+        <span class="spacer"></span>
+        <button type="button" class="act" id="clear">Clear output</button>
+      </div>
+      <pre id="console"></pre>
+    </section>
+  </div>
+</div>
+
+<!-- Interactive split-screen terminal workspace. Hidden until toggled; when
+     shown it docks to the right of the command builder (both stay visible) and
+     can be resized by dragging the grip. Each pane is an independent shell
+     (PTY) served from /api/terminal, so you can run commands side by side and
+     compare their output. -->
+<section id="termview" hidden aria-label="Terminal workspace">
+  <div class="termgrip" id="termgrip" role="separator" aria-orientation="vertical" aria-label="Resize terminal" title="Drag to resize"></div>
+  <div class="termbar">
+    <span class="termtitle">Terminals</span>
+    <button type="button" class="tbtn" id="term-add" title="Open another shell (Ctrl+Shift+T)">＋ Split</button>
+    <span class="termcols" role="group" aria-label="Columns">
+      <span class="termcols-label">Columns</span>
+      <button type="button" class="colbtn" data-cols="1">1</button>
+      <button type="button" class="colbtn" data-cols="2">2</button>
+      <button type="button" class="colbtn" data-cols="3">3</button>
+      <button type="button" class="colbtn" data-cols="4">4</button>
+    </span>
+    <span class="spacer"></span>
+    <span class="termfont" role="group" aria-label="Font size">
+      <button type="button" class="tbtn" id="term-font-dn" title="Smaller text">A−</button>
+      <button type="button" class="tbtn" id="term-font-up" title="Larger text">A+</button>
+    </span>
+    <button type="button" class="tbtn" id="term-close" title="Close the terminal workspace">✕ Close</button>
+  </div>
+  <div id="termpanes"></div>
+</section>
+
+<!-- Application Map: an Obsidian-style canvas of the engagement, built up from
+     the output of every catalog — nmap hosts/ports, web hosts/endpoints/params,
+     and AD hosts/users/creds/shares — stored per project. Shown when the
+     "Application Map" tab is active (see AppMap in the script below). -->
+<section id="mapview" hidden aria-label="Application map">
+  <div class="maptoolbar">
+    <span class="maptitle">⬡ Application Map</span>
+    <label for="map-project">Project</label>
+    <select id="map-project" aria-label="Map project"></select>
+    <span class="mapcount" id="map-count"></span>
+    <span class="spacer"></span>
+    <button type="button" class="mbtn" id="map-add" title="Add a free-floating note node">＋ Node</button>
+    <button type="button" class="mbtn" id="map-example" title="Load / reset the example map">★ Example</button>
+    <button type="button" class="mbtn" id="map-fit" title="Fit all nodes in view">⤢ Fit</button>
+    <button type="button" class="mbtn danger" id="map-delete" title="Delete the selected project's map">🗑 Delete map</button>
+  </div>
+  <div class="mapcanvas" id="map-canvas">
+    <div class="mapworld" id="map-world">
+      <svg class="mapedges" id="map-edges" width="8000" height="6000"></svg>
+    </div>
+    <div class="mapempty" id="map-empty" hidden></div>
+    <div class="maplegend" aria-hidden="true">
+      <span><i style="background:var(--accent)"></i>scope</span>
+      <span><i style="background:var(--accent-soft)"></i>host</span>
+      <span><i style="background:#73daca"></i>port</span>
+      <span><i style="background:var(--ok)"></i>endpoint</span>
+      <span><i style="background:var(--warn)"></i>param</span>
+      <span><i style="background:#ff9e64"></i>user</span>
+      <span><i style="background:#ffc777"></i>cred</span>
+      <span><i style="background:#7dcfff"></i>share</span>
+      <span><i style="background:var(--danger)"></i>finding</span>
+    </div>
+  </div>
+</section>
+
+</div>
+
+<div id="toast" role="status" aria-live="polite"></div>
+<div id="modal" class="modal" hidden><div class="dialog" id="dialog" role="dialog" aria-modal="true"></div></div>
+
+<script id="config" type="application/json">{{CONFIG}}</script>
+<script>
+// The server fills in the config block above. Opened straight from disk it
+// still holds the placeholder, so fall back to an empty catalog and explain.
+let CONFIG;
+try {
+  CONFIG = JSON.parse(document.getElementById("config").textContent);
+} catch {
+  CONFIG = { title: document.title, modes: [] };
+}
+const SERVED = location.protocol.startsWith("http"); // false when opened from disk
+
+// Flag kinds — must match the FlagKind iota in tool.go.
+const BOOL = 0, STRING = 1, INT = 2, CHOICE = 3;
+
+const listEl = document.getElementById("list");
+const detailEl = document.getElementById("detail");
+const filterEl = document.getElementById("filter");
+const countEl = document.getElementById("count");
+const toastEl = document.getElementById("toast");
+const modalEl = document.getElementById("modal");
+const dialogEl = document.getElementById("dialog");
+const modesEl = document.getElementById("modes");
+
+// One self-contained context per mode (web / AD): its catalog (with a slug and
+// filter haystack per tool), a slug index, and the UI state remembered across
+// switches. Every tool gets a stable, URL-safe slug for #links.
+const MODES = (CONFIG.modes && CONFIG.modes.length
+  ? CONFIG.modes
+  : [{ key: "web", label: "web", catalog: [], projects: [] }]
+).map((md) => {
+  const cat = md.catalog || [];
+  const bs = new Map();
+  cat.forEach((t, i) => {
+    t._i = i;
+    const base = (t.Name || "tool").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "tool";
+    let slug = base;
+    for (let n = 2; bs.has(slug); n++) slug = base + "-" + n;
+    t.slug = slug;
+    t.hay = ((t.Name || "") + " " + (t.Category || "") + " " + (t.Desc || "")).toLowerCase();
+    bs.set(slug, t);
+  });
+  return {
+    key: md.key, label: md.label, catalog: cat, projects: md.projects || [],
+    bySlug: bs, activeProject: "", currentSlug: null, filter: "",
+  };
+});
+// Application Map is a client-only pseudo-mode: instead of a tool catalog it
+// shows an Obsidian-style canvas (see AppMap) that aggregates what every other
+// mode's runs discover. It carries the per-mode UI fields the switcher reads,
+// an empty catalog, and shares the project list.
+MODES.push({
+  key: "appmap", label: "Application Map", isMap: true,
+  catalog: [], projects: MODES[0].projects, bySlug: new Map(),
+  activeProject: "", currentSlug: null, filter: "",
+});
+const MODE_BY_KEY = new Map(MODES.map((m) => [m.key, m]));
+
+// The active mode and live aliases into it. activateMode() snapshots these back
+// into the outgoing mode and reloads them from the incoming one, so each mode
+// keeps its own selection, filter, and active project. The project list itself
+// is shared across modes (same list in every mode.projects).
+let mode = MODES[0];
+let CATALOG = mode.catalog;
+let PROJECTS = mode.projects;
+let bySlug = mode.bySlug;
+let activeProject = mode.activeProject;
+let shown = CATALOG; // tools passing the filter, in catalog order
+let current = null;  // selected tool (catalog entry)
+let work = [];       // per-flag working state: {value, enabled} parallel to current.Flags
+let grepOn = false;  // whether the selected tool's key-info filter is piped on
+let runCtl = null;   // AbortController for the in-flight run, or null
+
+function esc(s) {
+  return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+}
+
+function toast(msg) {
+  toastEl.textContent = msg;
+  toastEl.classList.add("show");
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => toastEl.classList.remove("show"), 1400);
+}
+
+// ── command assembly (mirrors Tool.Command / shellQuote in tool.go) ───────
+function isPlaceholder(flag) {
+  return flag && flag.length >= 2 && flag[0] === "{" && flag[flag.length - 1] === "}";
+}
+const SAFE = /^[A-Za-z0-9\-_.\/:=@%+,]+$/;
+function shellQuote(s) {
+  if (s === "") return "''";
+  if (SAFE.test(s)) return s;
+  return "'" + s.replace(/'/g, "'\\''") + "'";
+}
+// buildCommand assembles the command string from current + work, exactly as
+// the Go side does, for the live preview and the Copy button.
+function buildCommand() {
+  if (!current) return "";
+  const flags = current.Flags || [];
+  let base = current.Binary || "";
+  flags.forEach((f, i) => {
+    if (isPlaceholder(f.Flag)) {
+      const v = (work[i].value || "").trim();
+      if (v) base = base.split(f.Flag).join(v);
+    }
+  });
+  const parts = [base];
+  const positionals = [];
+  flags.forEach((f, i) => {
+    if (isPlaceholder(f.Flag)) return;
+    if (f.Kind === BOOL) {
+      if (work[i].enabled) parts.push(f.Flag);
+      return;
+    }
+    const v = (work[i].value || "").trim();
+    if (!v) return;
+    if (f.Positional) positionals.push(shellQuote(v));
+    else parts.push(f.Flag, shellQuote(v));
+  });
+  let cmd = parts.concat(positionals).join(" ");
+  // When the key-info filter is toggled on, pipe the command through it so the
+  // output console shows just the lines that matter. Mirrors Tool.Command().
+  if (grepOn && current.Grep && current.Grep.trim()) cmd += " | " + current.Grep.trim();
+  return cmd;
+}
+
+// missingRequired mirrors Tool.MissingRequired: names of required flags with no
+// value (or a required bool that's off).
+function missingRequired() {
+  if (!current) return [];
+  const miss = [];
+  (current.Flags || []).forEach((f, i) => {
+    if (!f.Required) return;
+    if (f.Kind === BOOL) {
+      if (!work[i].enabled) miss.push(f.Name);
+    } else if (!(work[i].value || "").trim()) {
+      miss.push(f.Name);
+    }
+  });
+  return miss;
+}
+
+// outOfScopeHit mirrors the server's check, for an instant client-side warning
+// (the server re-checks authoritatively before running).
+function outOfScopeHit(cmd) {
+  const p = PROJECTS.find((p) => p.name === activeProject);
+  if (!p || !p.out_of_scope) return "";
+  for (const o of p.out_of_scope) {
+    const t = (o || "").trim();
+    if (t && cmd.includes(t)) return o;
+  }
+  return "";
+}
+
+function activeInScope() {
+  const p = PROJECTS.find((p) => p.name === activeProject);
+  return (p && p.in_scope) || [];
+}
+
+// primaryTargetIdx mirrors model.primaryTargetIdx: the flag most likely to hold
+// the target URL/host, used to prefill from the active project's scope.
+function primaryTargetIdx(flags) {
+  for (let i = 0; i < flags.length; i++) if (flags[i].Positional && flags[i].Required) return i;
+  const targets = new Set(["-u", "-d", "-h", "-host", "-l", "--targets", "-f"]);
+  for (let i = 0; i < flags.length; i++) if (targets.has(flags[i].Flag)) return i;
+  return -1;
+}
+
+// ── sidebar list ──────────────────────────────────────────────────────────
+function applyFilter() {
+  const terms = filterEl.value.toLowerCase().split(/\s+/).filter(Boolean);
+  shown = terms.length ? CATALOG.filter((t) => terms.every((x) => t.hay.includes(x))) : CATALOG;
+  renderList();
+  if (shown.length && !shown.includes(current)) select(shown[0]);
+  else if (current) markSelected(current);
+}
+
+function renderList() {
+  listEl.replaceChildren();
+  let cat = null;
+  for (const t of shown) {
+    if (t.Category !== cat) {
+      cat = t.Category;
+      const h = document.createElement("div");
+      h.className = "cat";
+      h.textContent = cat || "other";
+      listEl.append(h);
+    }
+    const a = document.createElement("button");
+    a.type = "button";
+    a.className = "item";
+    a.dataset.slug = t.slug;
+    a.addEventListener("click", () => select(t));
+    const name = document.createElement("span");
+    name.className = "name";
+    name.textContent = t.Name;
+    const sum = document.createElement("span");
+    sum.className = "sum";
+    sum.textContent = t.Desc || "";
+    a.append(name, sum);
+    listEl.append(a);
+  }
+  if (!shown.length) {
+    const p = document.createElement("p");
+    p.className = "empty";
+    p.textContent = "No matches.";
+    listEl.append(p);
+  }
+  countEl.textContent = shown.length === CATALOG.length
+    ? CATALOG.length + " tools"
+    : shown.length + " of " + CATALOG.length + " tools";
+}
+
+function markSelected(t) {
+  for (const el of listEl.querySelectorAll(".item.sel")) el.classList.remove("sel");
+  const item = listEl.querySelector('[data-slug="' + t.slug + '"]');
+  if (item) {
+    item.classList.add("sel");
+    item.scrollIntoView({ block: "nearest" });
+  }
+}
+
+function select(t) {
+  if (!t) return;
+  // Changing tool abandons any in-flight run's UI (the fetch is aborted).
+  stopRun();
+  current = t;
+  // Fresh working copy from the catalog defaults.
+  work = (t.Flags || []).map((f) => ({ value: f.Value || "", enabled: !!f.Enabled }));
+  grepOn = false; // key-info filter starts off for each freshly selected tool
+  // Prefill the primary target from the active project's first in-scope entry.
+  const inScope = activeInScope();
+  if (inScope.length) {
+    const idx = primaryTargetIdx(t.Flags || []);
+    if (idx >= 0 && !(work[idx].value || "").trim()) work[idx].value = inScope[0];
+  }
+  mode.currentSlug = t.slug;
+  markSelected(t);
+  renderDetail();
+  setHash();
+  document.title = t.Name + " · " + mode.label + " · " + CONFIG.title;
+}
+
+// setHash keeps the URL as #<mode>/<slug> so links carry the mode too.
+function setHash() {
+  const want = mode.key + "/" + (current ? current.slug : "");
+  if (location.hash.slice(1) !== want) history.replaceState(null, "", "#" + want);
+}
+
+function move(delta) {
+  if (!shown.length) return;
+  const i = shown.indexOf(current);
+  select(shown[i < 0 ? 0 : Math.max(0, Math.min(shown.length - 1, i + delta))]);
+}
+
+// ── mode toggle (web ↔ AD) ──────────────────────────────────────────────────
+function renderModeToggle() {
+  modesEl.replaceChildren();
+  for (const m of MODES) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "modetab" + (m === mode ? " active" : "");
+    b.textContent = m.label;
+    b.setAttribute("role", "tab");
+    b.setAttribute("aria-selected", m === mode ? "true" : "false");
+    b.addEventListener("click", () => activateMode(m.key));
+    modesEl.append(b);
+  }
+}
+
+// activateMode swaps the active catalog. It snapshots the outgoing mode's UI
+// state (so returning restores your place) and reloads the globals from the
+// incoming one, then rebuilds the list and detail.
+function activateMode(key) {
+  const m = MODE_BY_KEY.get(key);
+  if (!m) return;
+  if (m !== mode) {
+    mode.activeProject = activeProject;
+    mode.projects = PROJECTS;
+    mode.currentSlug = current ? current.slug : mode.currentSlug;
+    mode.filter = filterEl.value;
+    stopRun();
+    mode = m;
+    CATALOG = mode.catalog;
+    PROJECTS = mode.projects;
+    bySlug = mode.bySlug;
+    activeProject = mode.activeProject;
+    current = null;
+  }
+  renderModeToggle();
+  // The map tab has no tool list/detail — skip the builder wiring and just show
+  // its own pane (syncModeChrome swaps the panes).
+  if (mode.isMap) { current = null; setHash(); syncModeChrome(); return; }
+  filterEl.value = mode.filter || "";
+  applyFilter(); // renders the list and selects the first match
+  const restore = mode.currentSlug && bySlug.get(mode.currentSlug);
+  if (restore) select(restore);
+  else setHash();
+  syncModeChrome();
+}
+
+// syncModeChrome reshapes the page for the active mode. In Reverse Shells mode
+// the streamed Output console is hidden — there you Run straight into the
+// attacker/victim shells (docked on the right) — which also gives the command
+// list and builder the full height to scroll. Every other mode keeps it.
+function syncModeChrome() {
+  // Application Map hides the whole builder (tool list + detail + output) and
+  // shows its own pane instead; every other mode hides it.
+  const isMap = !!mode.isMap;
+  const layout = document.querySelector(".layout");
+  const mapview = document.getElementById("mapview");
+  if (layout) layout.style.display = isMap ? "none" : "";
+  if (mapview) mapview.hidden = !isMap;
+  if (isMap) { AppMap.show(); return; }
+
+  const isRev = mode.key === "revshell";
+  const out = document.getElementById("outputpanel");
+  if (out) out.hidden = isRev;
+  // Dock the terminal along the bottom (horizontal split) in Reverse Shells
+  // mode; the side dock is used in every other mode.
+  const main = document.querySelector(".main");
+  if (main) main.classList.toggle("revdock", isRev);
+  // Clear any size dragged in the other orientation so each layout starts from
+  // its CSS default (a width for the side dock, a height for the bottom dock).
+  const view = document.getElementById("termview");
+  if (view) { view.style.width = ""; view.style.height = ""; }
+  // If the dock is already open, re-fit its shells to the new orientation.
+  if (typeof TermWorkspace !== "undefined" && TermWorkspace.visible()) {
+    TermWorkspace.measureCell();
+    for (const p of TermWorkspace.panes) p.fit(true);
+  }
+}
+
+// ── detail / configurator ──────────────────────────────────────────────────
+function renderDetail() {
+  const t = current;
+  detailEl.replaceChildren();
+  if (!t) return;
+
+  // project bar (populated by renderProjBar so it can refresh after edits)
+  const bar = document.createElement("div");
+  bar.className = "projbar";
+  bar.id = "projbar";
+  detailEl.append(bar);
+  renderProjBar();
+
+  // article: title, flags, command, actions, console
+  const art = document.createElement("article");
+  art.innerHTML =
+    '<div class="crumb">' + esc(t.Category || "tool") + "</div>" +
+    "<h1>" + esc(t.Name) + "</h1>" +
+    '<p class="summary">' + esc(t.Desc || "") + "</p>" +
+    '<p class="summary" style="font-family:var(--mono);font-size:12.5px">' + esc(t.Binary || "") + "</p>";
+
+  const flags = t.Flags || [];
+  if (flags.length) {
+    const h = document.createElement("h2");
+    h.textContent = "Flags";
+    art.append(h);
+    const box = document.createElement("div");
+    box.className = "flags";
+    flags.forEach((f, i) => box.append(flagRow(f, i)));
+    art.append(box);
+  } else {
+    const p = document.createElement("p");
+    p.className = "noflags";
+    p.textContent = "No flags — just copy or run the command.";
+    art.append(p);
+  }
+
+  // command + actions — the last block in the scrolling article, so you scroll
+  // down past the flags to reach the command and Run/Copy.
+  // In Reverse Shells mode the command is typed into an interactive shell rather
+  // than streamed to the output console, so offer two targets: the listener goes
+  // to the attacker pane, the payload to the victim pane.
+  const isRev = mode.key === "revshell";
+  const actions = isRev
+    ? '<button type="button" class="act run" id="run-att">▶ Run on attacker</button>' +
+      '<button type="button" class="act stop" id="stop-att">■ Stop attacker</button>' +
+      '<button type="button" class="act run" id="run-vic">▶ Run on victim</button>' +
+      '<button type="button" class="act stop" id="stop-vic">■ Stop victim</button>' +
+      '<button type="button" class="act" id="copy">Copy</button>'
+    : '<button type="button" class="act run" id="run">▶ Run</button>' +
+      '<button type="button" class="act" id="copy">Copy</button>';
+  // Optional key-info filter toggle: when the tool defines a Grep pipeline,
+  // offer a checkbox that pipes the command through it to surface just the
+  // important lines. Mirrors the TUI's ctrl+g.
+  const grepRow = (t.Grep && t.Grep.trim())
+    ? '<label class="grepfilter sw"><input type="checkbox" id="grep"' + (grepOn ? " checked" : "") +
+      '> key-info filter <code>| ' + esc(t.Grep.trim()) + "</code></label>"
+    : "";
+  const wrap = document.createElement("div");
+  wrap.className = "cmdwrap";
+  wrap.innerHTML =
+    '<h2 class="cmdhead">Command</h2>' +
+    grepRow +
+    '<pre class="cmd" id="cmd"></pre>' +
+    '<p class="missmsg" id="miss" hidden></p>' +
+    '<div class="actions">' + actions + "</div>";
+  art.append(wrap);
+  const grepCb = wrap.querySelector("#grep");
+  if (grepCb) grepCb.addEventListener("change", () => { grepOn = grepCb.checked; updateCmd(); });
+  wrap.querySelector("#copy").addEventListener("click", copyCmd);
+  const runBtn = wrap.querySelector("#run");
+  if (runBtn) runBtn.addEventListener("click", toggleRun);
+  const runAtt = wrap.querySelector("#run-att");
+  if (runAtt) runAtt.addEventListener("click", () => runInTerminal("attacker"));
+  const runVic = wrap.querySelector("#run-vic");
+  if (runVic) runVic.addEventListener("click", () => runInTerminal("victim"));
+  const stopAtt = wrap.querySelector("#stop-att");
+  if (stopAtt) stopAtt.addEventListener("click", () => stopInTerminal("attacker"));
+  const stopVic = wrap.querySelector("#stop-vic");
+  if (stopVic) stopVic.addEventListener("click", () => stopInTerminal("victim"));
+
+  // The output console and its controls live in the persistent #outputpanel
+  // below, so they are not rebuilt here and output survives tool/catalog
+  // switches.
+  detailEl.append(art);
+  updateScopeLine();
+  updateCmd();
+}
+
+function flagRow(f, i) {
+  const row = document.createElement("div");
+  row.className = "flag";
+
+  const label = document.createElement("div");
+  label.className = "label";
+  const flTok = f.Flag && !isPlaceholder(f.Flag) ? '<span class="fl">' + esc(f.Flag) + "</span> " : "";
+  label.innerHTML = flTok + esc(f.Name) + (f.Required ? ' <span class="req">*</span>' : "");
+  if (f.Desc) {
+    const d = document.createElement("p");
+    d.className = "fdesc";
+    d.textContent = f.Desc;
+    label.append(d);
+  }
+
+  const ctl = document.createElement("div");
+  ctl.className = "control";
+  if (f.Kind === BOOL) {
+    const lab = document.createElement("label");
+    lab.className = "sw";
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = !!work[i].enabled;
+    cb.addEventListener("change", () => { work[i].enabled = cb.checked; updateCmd(); });
+    lab.append(cb, document.createTextNode(" enabled"));
+    ctl.append(lab);
+  } else if (f.Kind === CHOICE) {
+    const s = document.createElement("select");
+    for (const c of f.Choices || []) s.append(new Option(c, c));
+    s.value = work[i].value;
+    s.addEventListener("change", () => { work[i].value = s.value; updateCmd(); });
+    ctl.append(s);
+  } else {
+    const inp = document.createElement("input");
+    inp.type = "text";
+    inp.dataset.fi = i;
+    if (f.Kind === INT) inp.inputMode = "numeric";
+    inp.value = work[i].value;
+    inp.placeholder = f.Placeholder || "";
+    inp.addEventListener("input", () => { work[i].value = inp.value; updateCmd(); });
+    ctl.append(inp);
+  }
+  row.append(label, ctl);
+  return row;
+}
+
+// renderProjBar (re)builds the project selector, scope summary, and the
+// New / Scope / Delete / reload controls. Called on first render and after any
+// project edit, so it never rebuilds the whole detail (preserving flags/output).
+function renderProjBar() {
+  const bar = document.getElementById("projbar");
+  if (!bar) return;
+  bar.replaceChildren();
+
+  const label = document.createElement("label");
+  label.setAttribute("for", "proj");
+  label.textContent = "Project";
+
+  const sel = document.createElement("select");
+  sel.id = "proj";
+  sel.append(new Option("— none —", ""));
+  for (const p of PROJECTS) sel.append(new Option(p.name, p.name));
+  if (!PROJECTS.some((p) => p.name === activeProject)) activeProject = "";
+  sel.value = activeProject;
+  sel.addEventListener("change", () => { activeProject = sel.value; renderProjBar(); updateCmd(); });
+
+  const scope = document.createElement("span");
+  scope.className = "scope";
+  scope.id = "scope";
+
+  const newBtn = mkBtn("＋ New", "pbtn", openNewProject);
+  const scopeBtn = mkBtn("✎ Scope", "pbtn", () => openScopeEditor(activeProject));
+  const delBtn = mkBtn("🗑 Delete", "pbtn danger", deleteActiveProject);
+  const spacer = document.createElement("span");
+  spacer.className = "spacer";
+  const refresh = mkBtn("↻", "pbtn", refreshProjects);
+  refresh.title = "reload projects edited in the TUI";
+
+  newBtn.disabled = !SERVED;
+  scopeBtn.disabled = !SERVED || !activeProject;
+  delBtn.disabled = !SERVED || !activeProject;
+  if (!SERVED) newBtn.title = "open via --web to edit projects";
+
+  bar.append(label, sel, scope, newBtn, scopeBtn, delBtn, spacer, refresh);
+  updateScopeLine();
+}
+
+function mkBtn(text, cls, onClick) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = cls;
+  b.textContent = text;
+  b.addEventListener("click", onClick);
+  return b;
+}
+
+// ── project editing (writes through to projects.json via /api/projects) ─────
+function openModal() { modalEl.hidden = false; }
+function closeModal() { modalEl.hidden = true; dialogEl.replaceChildren(); }
+modalEl.addEventListener("click", (e) => { if (e.target === modalEl) closeModal(); });
+
+async function projApi(body) {
+  const res = await fetch("/api/projects", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ mode: mode.key, ...body }),
+  });
+  if (!res.ok) throw new Error((await res.text()).trim() || ("HTTP " + res.status));
+  setProjectsEverywhere(await res.json());
+  return PROJECTS;
+}
+
+// Projects are shared across every mode, so apply a fresh list to all of them
+// (and to the live PROJECTS alias) — switching modes then shows the same list
+// without a reload.
+function setProjectsEverywhere(list) {
+  PROJECTS = list;
+  for (const m of MODES) m.projects = list;
+}
+
+function openNewProject() {
+  if (!SERVED) { toast("open via --web to edit projects"); return; }
+  dialogEl.replaceChildren();
+  dialogEl.innerHTML =
+    "<h3>New project</h3>" +
+    '<div class="row"><input type="text" id="np-name" placeholder="project name" autocomplete="off" spellcheck="false"></div>' +
+    '<p class="err" id="np-err" hidden></p>' +
+    '<div class="foot"><button type="button" class="act" id="np-cancel">Cancel</button>' +
+    '<button type="button" class="act run" id="np-create">Create</button></div>';
+  openModal();
+  const input = dialogEl.querySelector("#np-name");
+  const err = dialogEl.querySelector("#np-err");
+  input.focus();
+  const create = async () => {
+    const name = input.value.trim();
+    if (!name) { input.focus(); return; }
+    try {
+      await projApi({ op: "create", name });
+      activeProject = name;
+      closeModal();
+      renderProjBar();
+      updateCmd();
+      toast("Project created ✓");
+      openScopeEditor(name); // go straight to adding scope — a project needs it
+    } catch (e) { err.textContent = e.message; err.hidden = false; }
+  };
+  dialogEl.querySelector("#np-create").addEventListener("click", create);
+  dialogEl.querySelector("#np-cancel").addEventListener("click", closeModal);
+  input.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); create(); } });
+}
+
+async function deleteActiveProject() {
+  if (!SERVED || !activeProject) return;
+  if (!confirm('Delete project "' + activeProject + '"?')) return;
+  try {
+    await projApi({ op: "delete", name: activeProject });
+    activeProject = "";
+    renderProjBar();
+    updateCmd();
+    toast("Project deleted");
+  } catch (e) { toast(e.message); }
+}
+
+function openScopeEditor(name) {
+  if (!SERVED) { toast("open via --web to edit projects"); return; }
+  if (!PROJECTS.some((p) => p.name === name)) { toast("select a project first"); return; }
+  dialogEl.replaceChildren();
+  const h = document.createElement("h3");
+  h.textContent = "Scope — " + name;
+  dialogEl.append(h);
+  dialogEl.append(scopeSection(name, "in", "In scope", "e.g. example.com, 10.0.0.1"));
+  dialogEl.append(scopeSection(name, "out", "Out of scope", "e.g. admin.example.com"));
+  const hint = document.createElement("p");
+  hint.className = "fdesc";
+  hint.textContent = "In-scope targets prefill a tool's URL/host field. A command touching an out-of-scope entry is refused when you Run it.";
+  dialogEl.append(hint);
+  const foot = document.createElement("div");
+  foot.className = "foot";
+  const done = mkBtn("Done", "act run", () => { closeModal(); renderProjBar(); updateCmd(); });
+  foot.append(done);
+  dialogEl.append(foot);
+  openModal();
+}
+
+function scopeSection(name, scope, title, placeholder) {
+  const sec = document.createElement("div");
+  const h = document.createElement("h4");
+  h.textContent = title;
+  sec.append(h);
+
+  const row = document.createElement("div");
+  row.className = "row";
+  const input = document.createElement("input");
+  input.type = "text";
+  input.placeholder = placeholder;
+  input.autocomplete = "off";
+  input.spellcheck = false;
+  const add = mkBtn("Add", "act", () => doAdd());
+  row.append(input, add);
+  sec.append(row);
+
+  const ul = document.createElement("ul");
+  ul.className = "scopelist";
+  sec.append(ul);
+
+  const listOf = () => {
+    const p = PROJECTS.find((p) => p.name === name) || {};
+    return (scope === "in" ? p.in_scope : p.out_of_scope) || [];
+  };
+  const refresh = () => {
+    ul.replaceChildren();
+    const list = listOf();
+    if (!list.length) {
+      const li = document.createElement("li");
+      li.className = "none";
+      li.textContent = "(none)";
+      ul.append(li);
+      return;
+    }
+    for (const v of list) {
+      const li = document.createElement("li");
+      const span = document.createElement("span");
+      span.textContent = v;
+      const x = document.createElement("button");
+      x.className = "x";
+      x.textContent = "✕";
+      x.title = "remove";
+      x.addEventListener("click", async () => {
+        try { await projApi({ op: "removeScope", name, scope, value: v }); refresh(); }
+        catch (e) { toast(e.message); }
+      });
+      li.append(span, x);
+      ul.append(li);
+    }
+  };
+  const doAdd = async () => {
+    const v = input.value.trim();
+    if (!v) { input.focus(); return; }
+    try {
+      await projApi({ op: "addScope", name, scope, value: v });
+      input.value = "";
+      refresh();
+      input.focus();
+    } catch (e) { toast(e.message); }
+  };
+  input.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); doAdd(); } });
+  refresh();
+  return sec;
+}
+
+function updateScopeLine() {
+  const el = document.getElementById("scope");
+  if (!el) return;
+  const p = PROJECTS.find((p) => p.name === activeProject);
+  if (!p) { el.textContent = PROJECTS.length ? "no project — scope block off" : "no projects (create them in the TUI)"; return; }
+  el.textContent = "(" + (p.in_scope || []).length + " in / " + (p.out_of_scope || []).length + " out of scope)";
+}
+
+function updateCmd() {
+  const cmdEl = document.getElementById("cmd");
+  if (!cmdEl) return;
+  const cmd = buildCommand();
+  cmdEl.textContent = cmd || "(empty)";
+
+  const miss = missingRequired();
+  const missEl = document.getElementById("miss");
+  missEl.hidden = miss.length === 0;
+  if (miss.length) missEl.textContent = "missing required: " + miss.join(", ");
+
+  // mark empty required text inputs
+  for (const inp of detailEl.querySelectorAll('input[data-fi]')) {
+    const i = +inp.dataset.fi;
+    const f = current.Flags[i];
+    inp.classList.toggle("missing", f.Required && !(work[i].value || "").trim());
+  }
+
+  const hit = outOfScopeHit(cmd);
+  const actmsg = document.getElementById("actmsg");
+  // The run control is a single button in most modes, or the attacker/victim
+  // pair in Reverse Shells mode — disable whichever are present together.
+  const runBtns = ["run", "run-att", "run-vic"]
+    .map((id) => document.getElementById(id))
+    .filter(Boolean);
+  const running = !!runCtl;
+  if (!running) {
+    if (hit) { actmsg.textContent = "⚠ out-of-scope: " + hit + " — run blocked"; actmsg.classList.add("warn"); }
+    else if (miss.length) { actmsg.textContent = "fill required fields to run"; actmsg.classList.remove("warn"); }
+    else if (!SERVED) { actmsg.textContent = "open via --web to run commands"; actmsg.classList.remove("warn"); }
+    else { actmsg.textContent = ""; actmsg.classList.remove("warn"); }
+    const disabled = !SERVED || miss.length > 0 || !!hit;
+    for (const b of runBtns) b.disabled = disabled;
+  }
+}
+
+// ── output console ──────────────────────────────────────────────────────────
+function consoleEl() { return document.getElementById("console"); }
+function setConsoleHint() {
+  const c = consoleEl();
+  if (c && !c.childElementCount) {
+    const s = document.createElement("span");
+    s.className = "hint";
+    s.textContent = SERVED
+      ? "Run a command to stream its output here. It runs on the machine serving this page."
+      : "Opened from disk — serve with `./run.sh --web` to run commands.";
+    c.append(s);
+  }
+}
+function appendLine(text, cls) {
+  const c = consoleEl();
+  if (!c) return;
+  if (c.querySelector(".hint")) c.replaceChildren();
+  const span = document.createElement("span");
+  if (cls) span.className = cls;
+  span.textContent = text + "\n";
+  c.append(span);
+  c.scrollTop = c.scrollHeight;
+}
+
+// ── run / copy ──────────────────────────────────────────────────────────────
+function copyCmd() {
+  const cmd = buildCommand();
+  navigator.clipboard?.writeText(cmd).then(
+    () => toast("Copied ✓"),
+    () => toast("Copy failed"),
+  );
+}
+
+function setRunning(on) {
+  const runBtn = document.getElementById("run");
+  const dot = document.getElementById("dot");
+  if (!runBtn) return;
+  if (on) {
+    runBtn.textContent = "■ Stop";
+    runBtn.classList.remove("run");
+    runBtn.classList.add("stop");
+    runBtn.disabled = false;
+    dot && dot.classList.add("live");
+  } else {
+    runBtn.textContent = "▶ Run";
+    runBtn.classList.remove("stop");
+    runBtn.classList.add("run");
+    dot && dot.classList.remove("live");
+    updateCmd();
+  }
+}
+
+function toggleRun() {
+  if (runCtl) { stopRun(); return; }
+  run();
+}
+
+function stopRun() {
+  if (runCtl) {
+    runCtl.abort();
+    runCtl = null;
+  }
+}
+
+async function run() {
+  if (!current || !SERVED) return;
+  const miss = missingRequired();
+  if (miss.length) { toast("missing required fields"); return; }
+
+  // Capture this run's command + output so the Application Map can map what it
+  // discovers (nmap hosts/ports, web endpoints/params, AD users/creds/shares).
+  AppMap.beginRun(buildCommand(), mode.key);
+
+  const idx = CATALOG.indexOf(current);
+  const values = (current.Flags || []).map((f, i) =>
+    f.Kind === BOOL ? { enabled: !!work[i].enabled, value: "" } : { value: work[i].value || "", enabled: false });
+
+  runCtl = new AbortController();
+  setRunning(true);
+  // Output accumulates in the persistent console across tools and catalogs, so
+  // mark where each run begins with a header naming the catalog and tool.
+  if (consoleEl().childElementCount && !consoleEl().querySelector(".hint")) appendLine("", null);
+  appendLine("── " + mode.label + " · " + current.Name + " ──", "done");
+  const actmsg = document.getElementById("actmsg");
+  actmsg.textContent = "running — output below (Stop to cancel)";
+  actmsg.classList.remove("warn");
+
+  try {
+    const res = await fetch("/api/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: mode.key, tool: idx, project: activeProject, values }),
+      signal: runCtl.signal,
+    });
+    if (!res.ok || !res.body) {
+      appendLine("— request failed (HTTP " + res.status + ") —", "err");
+      return;
+    }
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = "";
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let nl;
+      while ((nl = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, nl);
+        buf = buf.slice(nl + 1);
+        if (line.trim()) handleRec(line);
+      }
+    }
+    if (buf.trim()) handleRec(buf);
+  } catch (e) {
+    if (e.name !== "AbortError") appendLine("— " + e.message + " —", "err");
+    else appendLine("— canceled —", "hint");
+  } finally {
+    runCtl = null;
+    setRunning(false);
+    document.getElementById("actmsg").textContent = "";
+    // Covers a cancelled/failed run that never streamed a final record.
+    AppMap.endRun(activeProject);
+  }
+}
+
+function handleRec(line) {
+  let rec;
+  try { rec = JSON.parse(line); } catch { appendLine(line); return; }
+  if (rec.final) {
+    if (rec.err) appendLine("— " + rec.err + " —", "err");
+    else appendLine("— done · exit 0 —", "done");
+    AppMap.endRun(activeProject);
+    return;
+  }
+  if (typeof rec.line === "string") {
+    appendLine(rec.line, rec.line.startsWith("$ ") ? "cmdline" : null);
+    if (!rec.line.startsWith("$ ")) AppMap.pushLine(rec.line);
+  }
+}
+
+// ── reverse-shell run (into the interactive panes) ──────────────────────────
+// Labels for the two Reverse Shells panes, keyed by role. runInTerminal types
+// the built command straight into the matching shell: the listener into the
+// attacker pane, the payload into the victim pane.
+const REV_ROLE = {
+  attacker: "⚔ attacker (listener)",
+  victim: "🎯 victim",
+};
+function runInTerminal(role) {
+  if (!SERVED) { toast("open via --web to run"); return; }
+  const miss = missingRequired();
+  if (miss.length) { toast("missing required: " + miss.join(", ")); return; }
+  const cmd = buildCommand();
+  if (!cmd) { toast("empty command"); return; }
+  const hit = outOfScopeHit(cmd);
+  if (hit) { toast("out-of-scope: " + hit + " — blocked"); return; }
+  const pane = TermWorkspace.sendToRole(role, cmd);
+  if (pane) toast("Sent to " + role + " ▸");
+}
+
+// stopInTerminal interrupts whatever is running in the attacker/victim shell by
+// sending Ctrl+C, leaving the pane open. Does nothing if that pane isn't live.
+function stopInTerminal(role) {
+  if (!SERVED) { toast("open via --web to run"); return; }
+  const pane = TermWorkspace.panes.find((p) => p.role === role);
+  if (!pane || !pane.alive) { toast("no live " + role + " shell"); return; }
+  pane.sendInterrupt();
+  pane.focus();
+  toast("Sent ^C to " + role + " ▪");
+}
+
+async function refreshProjects() {
+  if (!SERVED) { toast("not served"); return; }
+  try {
+    const res = await fetch("/api/projects?mode=" + encodeURIComponent(mode.key), { headers: { "Accept": "application/json" } });
+    if (res.ok) {
+      setProjectsEverywhere(await res.json());
+      renderProjBar(); // refresh the bar with the fresh list
+      updateCmd();
+      toast("Projects reloaded");
+    }
+  } catch { toast("reload failed"); }
+}
+
+// primaryRun is the keyboard default for Enter: run the listener on the attacker
+// in Reverse Shells mode, otherwise toggle the normal streamed run.
+function primaryRun() {
+  if (mode.key === "revshell") { runInTerminal("attacker"); return; }
+  if (!document.getElementById("run")?.disabled || runCtl) toggleRun();
+}
+
+// ── keyboard ────────────────────────────────────────────────────────────────
+const typing = (e) => /^(input|select|textarea)$/i.test(e.target.tagName);
+document.addEventListener("keydown", (e) => {
+  // The terminal dock can be open alongside the builder. Ctrl+Shift+T splits a
+  // new shell whenever it's open. When focus is inside the dock the pane owns
+  // the keyboard; otherwise the catalog shortcuts (j/k/enter/…) still apply.
+  if (TermWorkspace.visible()) {
+    if (e.ctrlKey && e.shiftKey && (e.key === "T" || e.key === "t")) { e.preventDefault(); TermWorkspace.add(); return; }
+    if (e.target.closest && e.target.closest("#termview")) return;
+  }
+  // While a dialog is open it owns the keyboard; only Escape (close) applies.
+  if (!modalEl.hidden) { if (e.key === "Escape") { e.preventDefault(); closeModal(); } return; }
+  if (e.key === "/" && !typing(e)) { e.preventDefault(); filterEl.focus(); filterEl.select(); return; }
+  if (e.target === filterEl) {
+    if (e.key === "ArrowDown") { e.preventDefault(); move(1); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); move(-1); }
+    else if (e.key === "Enter" || e.key === "Escape") { e.preventDefault(); detailEl.focus(); }
+    return;
+  }
+  if (typing(e)) {
+    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); primaryRun(); }
+    return;
+  }
+  switch (e.key) {
+    case "j": case "ArrowDown": e.preventDefault(); move(1); break;
+    case "k": case "ArrowUp": e.preventDefault(); move(-1); break;
+    case "g": if (shown.length) { e.preventDefault(); select(shown[0]); } break;
+    case "G": if (shown.length) { e.preventDefault(); select(shown[shown.length - 1]); } break;
+    case "y": e.preventDefault(); copyCmd(); break;
+    case "Enter": e.preventDefault(); primaryRun(); break;
+    case "Escape": if (filterEl.value) { filterEl.value = ""; applyFilter(); } break;
+  }
+});
+
+filterEl.addEventListener("input", applyFilter);
+
+// ════════════════════════════════════════════════════════════════════════════
+// Interactive split-screen terminal workspace
+//
+// Each pane is a real shell running on the server over a WebSocket to
+// /api/terminal: keystrokes are sent up, output comes back, and several panes
+// tile side by side so you can run commands and compare their output. There is
+// no xterm.js — to stay self-contained and work offline this includes a small
+// ANSI terminal emulator (TermEmu) that handles the common cases: colours,
+// carriage returns / progress bars, cursor moves, line/screen erase and the
+// alternate-screen buffer used by full-screen programs.
+// ════════════════════════════════════════════════════════════════════════════
+
+// 16-colour ANSI palette (0–7 normal, 8–15 bright).
+const ANSI16 = [
+  "#15161e", "#f7768e", "#9ece6a", "#e0af68", "#7aa2f7", "#bb9af7", "#7dcfff", "#a9b1d6",
+  "#414868", "#f7768e", "#9ece6a", "#e0af68", "#7aa2f7", "#bb9af7", "#7dcfff", "#c0caf5",
+];
+const TERM_DEFAULT_FG = "#c0caf5";
+const TERM_DEFAULT_BG = "#16161e";
+
+// color256 maps an xterm 256-colour index to a CSS colour.
+function color256(n) {
+  if (n < 16) return ANSI16[n];
+  if (n < 232) {
+    n -= 16;
+    const r = Math.floor(n / 36), g = Math.floor(n / 6) % 6, b = n % 6;
+    const ch = (v) => (v === 0 ? 0 : 55 + v * 40);
+    return "rgb(" + ch(r) + "," + ch(g) + "," + ch(b) + ")";
+  }
+  const v = 8 + (n - 232) * 10;
+  return "rgb(" + v + "," + v + "," + v + ")";
+}
+
+// A terminal cell. fg/bg are CSS colour strings or null (meaning default).
+function blankCell() { return { ch: " ", fg: null, bg: null, bold: false, ul: false, inv: false }; }
+
+class TermEmu {
+  constructor(cols, rows) {
+    this.cols = Math.max(1, cols || 80);
+    this.rows = Math.max(1, rows || 24);
+    this.scrollMax = 2000;
+    this.reset();
+  }
+
+  reset() {
+    this.screen = this._blankScreen(this.rows);
+    this.scrollback = [];
+    this.cx = 0; this.cy = 0;
+    this.pen = blankCell();
+    this.saved = null;
+    this.alt = null; // saved primary screen while in the alternate buffer
+    this.parse = { state: "ground", buf: "" };
+  }
+
+  _blankScreen(rows) {
+    const s = [];
+    for (let y = 0; y < rows; y++) s.push(this._blankRow());
+    return s;
+  }
+  _blankRow() {
+    const r = [];
+    for (let x = 0; x < this.cols; x++) r.push(blankCell());
+    return r;
+  }
+
+  resize(cols, rows) {
+    cols = Math.max(1, cols); rows = Math.max(1, rows);
+    if (cols === this.cols && rows === this.rows) return;
+    this.cols = cols; this.rows = rows;
+    // Rebuild each row to the new width; rebuild the screen to the new height.
+    const fix = (row) => {
+      while (row.length < cols) row.push(blankCell());
+      if (row.length > cols) row.length = cols;
+      return row;
+    };
+    this.screen = this.screen.map(fix);
+    while (this.screen.length < rows) this.screen.push(this._blankRow());
+    while (this.screen.length > rows) this.scrollback.push(this.screen.shift());
+    if (this.alt) { this.alt.screen = this.alt.screen.map(fix); }
+    this.cx = Math.min(this.cx, cols - 1);
+    this.cy = Math.min(this.cy, rows - 1);
+    this._trimScrollback();
+  }
+
+  _trimScrollback() {
+    if (this.scrollback.length > this.scrollMax) {
+      this.scrollback.splice(0, this.scrollback.length - this.scrollMax);
+    }
+  }
+
+  _newLine() {
+    if (this.cy >= this.rows - 1) {
+      this.scrollback.push(this.screen.shift());
+      this.screen.push(this._blankRow());
+      this._trimScrollback();
+    } else {
+      this.cy++;
+    }
+  }
+
+  _putChar(ch) {
+    if (this.cx >= this.cols) { this.cx = 0; this._newLine(); }
+    const cell = this.screen[this.cy][this.cx];
+    cell.ch = ch;
+    cell.fg = this.pen.fg; cell.bg = this.pen.bg;
+    cell.bold = this.pen.bold; cell.ul = this.pen.ul; cell.inv = this.pen.inv;
+    this.cx++;
+  }
+
+  // write feeds a chunk of output through the parser.
+  write(str) {
+    for (const ch of str) this._feed(ch);
+  }
+
+  _feed(ch) {
+    const p = this.parse;
+    if (p.state === "ground") {
+      const code = ch.codePointAt(0);
+      if (ch === "\x1b") { p.state = "esc"; p.buf = ""; return; }
+      if (ch === "\r") { this.cx = 0; return; }
+      if (ch === "\n" || ch === "\x0b" || ch === "\x0c") { this._newLine(); return; }
+      if (ch === "\b") { this.cx = Math.max(0, this.cx - 1); return; }
+      if (ch === "\t") { this.cx = Math.min(this.cols - 1, (Math.floor(this.cx / 8) + 1) * 8); return; }
+      if (code === 0x07) return; // bell
+      if (code < 0x20) return;   // other control chars: ignore
+      this._putChar(ch);
+      return;
+    }
+    if (p.state === "esc") {
+      if (ch === "[") { p.state = "csi"; p.buf = ""; return; }
+      if (ch === "]") { p.state = "osc"; p.buf = ""; return; }
+      if (ch === "(" || ch === ")" || ch === "#" || ch === "%") { p.state = "ignore1"; return; }
+      if (ch === "M") { // reverse index (scroll down)
+        if (this.cy > 0) this.cy--; else { this.screen.unshift(this._blankRow()); this.screen.pop(); }
+        p.state = "ground"; return;
+      }
+      if (ch === "c") { this.reset(); return; } // full reset (also clears parser)
+      p.state = "ground"; // unknown short escape: drop it
+      return;
+    }
+    if (p.state === "ignore1") { p.state = "ground"; return; }
+    if (p.state === "osc") {
+      // OSC … terminated by BEL or ESC\. We don't render titles; just consume.
+      if (ch === "\x07") { p.state = "ground"; return; }
+      if (ch === "\x1b") { p.state = "oscesc"; return; }
+      return;
+    }
+    if (p.state === "oscesc") { p.state = "ground"; return; }
+    if (p.state === "csi") {
+      if ((ch >= "0" && ch <= "9") || ch === ";" || ch === "?" || ch === ">" || ch === "=") {
+        p.buf += ch; return;
+      }
+      this._csi(ch, p.buf);
+      p.state = "ground";
+      return;
+    }
+  }
+
+  _csi(final, buf) {
+    const priv = buf.startsWith("?");
+    const body = priv ? buf.slice(1) : buf;
+    const params = body.split(";").map((x) => (x === "" ? 0 : parseInt(x, 10) || 0));
+    const p0 = params[0] || 0;
+    const clampX = () => { this.cx = Math.max(0, Math.min(this.cols - 1, this.cx)); };
+    const clampY = () => { this.cy = Math.max(0, Math.min(this.rows - 1, this.cy)); };
+    switch (final) {
+      case "A": this.cy -= (p0 || 1); clampY(); break;
+      case "B": this.cy += (p0 || 1); clampY(); break;
+      case "C": this.cx += (p0 || 1); clampX(); break;
+      case "D": this.cx -= (p0 || 1); clampX(); break;
+      case "E": this.cy += (p0 || 1); this.cx = 0; clampY(); break;
+      case "F": this.cy -= (p0 || 1); this.cx = 0; clampY(); break;
+      case "G": this.cx = (p0 || 1) - 1; clampX(); break;
+      case "d": this.cy = (p0 || 1) - 1; clampY(); break;
+      case "H": case "f":
+        this.cy = (params[0] || 1) - 1; this.cx = (params[1] || 1) - 1; clampY(); clampX(); break;
+      case "J": this._eraseScreen(p0); break;
+      case "K": this._eraseLine(p0); break;
+      case "m": this._sgr(params); break;
+      case "s": this.saved = { cx: this.cx, cy: this.cy }; break;
+      case "u": if (this.saved) { this.cx = this.saved.cx; this.cy = this.saved.cy; clampX(); clampY(); } break;
+      case "h": if (priv) this._privMode(params, true); break;
+      case "l": if (priv) this._privMode(params, false); break;
+      case "P": this._deleteChars(p0 || 1); break;
+      case "@": this._insertChars(p0 || 1); break;
+      case "X": this._eraseChars(p0 || 1); break;
+      default: break; // unsupported: ignore
+    }
+  }
+
+  _eraseScreen(mode) {
+    const blank = () => blankCell();
+    if (mode === 0) {
+      for (let x = this.cx; x < this.cols; x++) this.screen[this.cy][x] = blank();
+      for (let y = this.cy + 1; y < this.rows; y++) this.screen[y] = this._blankRow();
+    } else if (mode === 1) {
+      for (let x = 0; x <= this.cx && x < this.cols; x++) this.screen[this.cy][x] = blank();
+      for (let y = 0; y < this.cy; y++) this.screen[y] = this._blankRow();
+    } else {
+      this.screen = this._blankScreen(this.rows);
+      if (mode === 3) this.scrollback = [];
+    }
+  }
+
+  _eraseLine(mode) {
+    const row = this.screen[this.cy];
+    if (mode === 0) { for (let x = this.cx; x < this.cols; x++) row[x] = blankCell(); }
+    else if (mode === 1) { for (let x = 0; x <= this.cx && x < this.cols; x++) row[x] = blankCell(); }
+    else { this.screen[this.cy] = this._blankRow(); }
+  }
+
+  _eraseChars(n) {
+    const row = this.screen[this.cy];
+    for (let i = 0; i < n && this.cx + i < this.cols; i++) row[this.cx + i] = blankCell();
+  }
+
+  _deleteChars(n) {
+    const row = this.screen[this.cy];
+    row.splice(this.cx, n);
+    while (row.length < this.cols) row.push(blankCell());
+  }
+
+  _insertChars(n) {
+    const row = this.screen[this.cy];
+    for (let i = 0; i < n; i++) row.splice(this.cx, 0, blankCell());
+    row.length = this.cols;
+  }
+
+  _privMode(params, on) {
+    for (const code of params) {
+      if (code === 1049 || code === 47 || code === 1047) {
+        if (on && !this.alt) {
+          this.alt = { screen: this.screen, cx: this.cx, cy: this.cy };
+          this.screen = this._blankScreen(this.rows);
+          this.cx = 0; this.cy = 0;
+        } else if (!on && this.alt) {
+          this.screen = this.alt.screen;
+          this.cx = this.alt.cx; this.cy = this.alt.cy;
+          this.alt = null;
+        }
+      }
+      // Other private modes (cursor visibility 25, bracketed paste 2004, …)
+      // don't affect our text rendering, so they are ignored.
+    }
+  }
+
+  _sgr(params) {
+    if (params.length === 0) params = [0];
+    for (let i = 0; i < params.length; i++) {
+      const n = params[i];
+      if (n === 0) { this.pen = blankCell(); }
+      else if (n === 1) this.pen.bold = true;
+      else if (n === 22) this.pen.bold = false;
+      else if (n === 4) this.pen.ul = true;
+      else if (n === 24) this.pen.ul = false;
+      else if (n === 7) this.pen.inv = true;
+      else if (n === 27) this.pen.inv = false;
+      else if (n >= 30 && n <= 37) this.pen.fg = ANSI16[n - 30];
+      else if (n === 39) this.pen.fg = null;
+      else if (n >= 40 && n <= 47) this.pen.bg = ANSI16[n - 40];
+      else if (n === 49) this.pen.bg = null;
+      else if (n >= 90 && n <= 97) this.pen.fg = ANSI16[n - 90 + 8];
+      else if (n >= 100 && n <= 107) this.pen.bg = ANSI16[n - 100 + 8];
+      else if (n === 38 || n === 48) {
+        const target = n === 38 ? "fg" : "bg";
+        if (params[i + 1] === 5) { this.pen[target] = color256(params[i + 2] || 0); i += 2; }
+        else if (params[i + 1] === 2) {
+          this.pen[target] = "rgb(" + (params[i + 2] || 0) + "," + (params[i + 3] || 0) + "," + (params[i + 4] || 0) + ")";
+          i += 4;
+        }
+      }
+    }
+  }
+
+  // renderHTML returns the screen (scrollback + live rows) as HTML, grouping
+  // runs of same-styled cells into spans. The cursor cell is highlighted when
+  // showCursor is set and we're not in the alternate buffer.
+  renderHTML(showCursor) {
+    const out = [];
+    for (const row of this.scrollback) out.push(this._rowHTML(row, -1, false));
+    for (let y = 0; y < this.screen.length; y++) {
+      const curCol = (showCursor && y === this.cy) ? this.cx : -1;
+      out.push(this._rowHTML(this.screen[y], curCol, true));
+    }
+    return out.join("\n");
+  }
+
+  _rowHTML(row, curCol, live) {
+    // Find the last cell worth rendering (non-blank or styled), but always keep
+    // the cursor cell visible.
+    let last = -1;
+    for (let x = 0; x < row.length; x++) {
+      const c = row[x];
+      if (c.ch !== " " || c.bg || c.inv || x === curCol) last = x;
+    }
+    if (last < 0) return "";
+    let html = "";
+    let run = null, runStyle = "", runCur = false;
+    const flush = () => {
+      if (run === null) return;
+      const tag = runCur ? '<span class="cur"' : "<span";
+      html += tag + (runStyle ? ' style="' + runStyle + '"' : "") + ">" + run + "</span>";
+      run = null;
+    };
+    for (let x = 0; x <= last; x++) {
+      const c = row[x];
+      const style = this._cellStyle(c);
+      const isCur = x === curCol;
+      if (run === null || style !== runStyle || isCur || runCur) {
+        flush();
+        run = ""; runStyle = style; runCur = isCur;
+      }
+      run += escTerm(c.ch === "" ? " " : c.ch);
+    }
+    flush();
+    return html;
+  }
+
+  _cellStyle(c) {
+    let fg = c.fg, bg = c.bg;
+    if (c.inv) { const t = fg || TERM_DEFAULT_FG; fg = bg || TERM_DEFAULT_BG; bg = t; }
+    const parts = [];
+    if (fg) parts.push("color:" + fg);
+    if (bg) parts.push("background:" + bg);
+    if (c.bold) parts.push("font-weight:700");
+    if (c.ul) parts.push("text-decoration:underline");
+    return parts.join(";");
+  }
+}
+
+function escTerm(s) {
+  return s.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+}
+
+// ── one terminal pane: DOM + WebSocket + emulator ───────────────────────────
+class Pane {
+  constructor(workspace, n, name, role) {
+    this.ws = workspace;
+    this.emu = new TermEmu(80, 24);
+    this.dec = new TextDecoder();
+    this.socket = null;
+    this.alive = false;
+    this.dirty = false;
+    this.role = role || null;   // "attacker" / "victim" in revshell mode, else null
+    this.pendingSend = null;    // a command to type once the shell connects
+    this.lastCols = 0; this.lastRows = 0;
+
+    const el = document.createElement("div");
+    el.className = "pane";
+    el.innerHTML =
+      '<div class="pane-head">' +
+        '<span class="pane-dot"></span>' +
+        '<input class="pane-name" value="shell ' + n + '" spellcheck="false" aria-label="Pane name">' +
+        '<button type="button" class="pane-x" title="Close pane">✕</button>' +
+      "</div>" +
+      '<div class="pane-screen" tabindex="0" aria-label="Terminal output"></div>';
+    this.el = el;
+    this.screenEl = el.querySelector(".pane-screen");
+    this.dotEl = el.querySelector(".pane-dot");
+    this.nameEl = el.querySelector(".pane-name");
+    if (name) this.nameEl.value = name; // e.g. "attacker" / "victim" in revshell mode
+
+    el.querySelector(".pane-x").addEventListener("click", () => this.ws.remove(this));
+    el.querySelector(".pane-name").addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); this.screenEl.focus(); }
+    });
+    this.screenEl.addEventListener("keydown", (e) => this._onKey(e));
+    this.screenEl.addEventListener("paste", (e) => {
+      e.preventDefault();
+      const t = (e.clipboardData || window.clipboardData).getData("text");
+      if (t) this._sendInput(t);
+    });
+    this.screenEl.addEventListener("focus", () => { this.ws.setFocused(this); this.render(); });
+    this.screenEl.addEventListener("blur", () => this.render());
+    el.addEventListener("mousedown", () => this.ws.setFocused(this));
+
+    this.ro = new ResizeObserver(() => this.fit());
+    this.ro.observe(this.screenEl);
+
+    this.connect();
+  }
+
+  connect() {
+    if (!SERVED) {
+      this.emu.write("\x1b[33mOpen this page via `./run.sh --web` to use the terminal.\x1b[0m\r\n");
+      this.render();
+      this._setDot("dead");
+      return;
+    }
+    const proto = location.protocol === "https:" ? "wss:" : "ws:";
+    let sock;
+    try { sock = new WebSocket(proto + "//" + location.host + "/api/terminal"); }
+    catch (e) { this._fail(e.message); return; }
+    sock.binaryType = "arraybuffer";
+    this.socket = sock;
+    sock.onopen = () => {
+      this.alive = true; this._setDot("live"); this.fit(true); this.screenEl.focus();
+      // Flush a command queued before the shell was ready (e.g. a brand-new
+      // attacker/victim pane created by a Run button).
+      if (this.pendingSend != null) {
+        const t = this.pendingSend; this.pendingSend = null;
+        setTimeout(() => this._sendInput(t + "\r"), 60);
+      }
+    };
+    sock.onmessage = (ev) => {
+      if (typeof ev.data === "string") this.emu.write(ev.data);
+      else this.emu.write(this.dec.decode(new Uint8Array(ev.data), { stream: true }));
+      this.render();
+    };
+    sock.onclose = () => { this.alive = false; this._setDot("dead"); this.emu.write("\r\n\x1b[90m[session ended]\x1b[0m\r\n"); this.render(); };
+    sock.onerror = () => { if (!this.alive) this._fail("could not connect"); };
+  }
+
+  _fail(msg) {
+    this.alive = false;
+    this._setDot("dead");
+    this.emu.write("\x1b[31m[" + msg + "]\x1b[0m\r\n");
+    this.render();
+  }
+
+  _setDot(cls) { this.dotEl.className = "pane-dot" + (cls ? " " + cls : ""); }
+
+  // fit measures the pane, resizes the emulator, and tells the server, so the
+  // shell wraps lines to the visible width.
+  fit(force) {
+    const dims = this._measure();
+    if (!dims) return;
+    const { cols, rows } = dims;
+    if (!force && cols === this.lastCols && rows === this.lastRows) return;
+    this.lastCols = cols; this.lastRows = rows;
+    this.emu.resize(cols, rows);
+    this.render();
+    if (this.socket && this.alive) {
+      try { this.socket.send(JSON.stringify({ type: "resize", cols, rows })); } catch {}
+    }
+  }
+
+  _measure() {
+    const cw = this.ws.charW, chh = this.ws.charH;
+    if (!cw || !chh) return null;
+    const style = getComputedStyle(this.screenEl);
+    const padX = parseFloat(style.paddingLeft) + parseFloat(style.paddingRight);
+    const padY = parseFloat(style.paddingTop) + parseFloat(style.paddingBottom);
+    const w = this.screenEl.clientWidth - padX;
+    const h = this.screenEl.clientHeight - padY;
+    if (w <= 0 || h <= 0) return null;
+    return { cols: Math.max(2, Math.floor(w / cw)), rows: Math.max(1, Math.floor(h / chh)) };
+  }
+
+  render() {
+    if (this.dirty) return;
+    this.dirty = true;
+    requestAnimationFrame(() => {
+      this.dirty = false;
+      const atBottom = this.screenEl.scrollHeight - this.screenEl.clientHeight - this.screenEl.scrollTop < 20;
+      const focused = document.activeElement === this.screenEl;
+      this.screenEl.innerHTML = this.emu.renderHTML(focused && this.alive);
+      if (atBottom) this.screenEl.scrollTop = this.screenEl.scrollHeight;
+    });
+  }
+
+  _onKey(e) {
+    if (e.key === "Tab" && e.shiftKey) return; // let the browser move focus out
+    const bytes = keyToBytes(e);
+    if (bytes === null) return;
+    e.preventDefault();
+    e.stopPropagation();
+    this._sendInput(bytes);
+  }
+
+  _sendInput(data) {
+    if (this.socket && this.alive) {
+      try { this.socket.send(JSON.stringify({ type: "input", data })); } catch {}
+    }
+  }
+
+  // sendCommand types a command line into the shell and runs it (adds Enter). If
+  // the socket isn't open yet it's queued and flushed from onopen.
+  sendCommand(text) {
+    if (this.alive) this._sendInput(text + "\r");
+    else this.pendingSend = text;
+  }
+
+  // sendInterrupt sends Ctrl+C to stop whatever command is running in the shell.
+  sendInterrupt() { this._sendInput("\x03"); }
+
+  focus() { this.screenEl.focus(); }
+
+  destroy() {
+    this.ro.disconnect();
+    if (this.socket) { try { this.socket.close(); } catch {} }
+    this.el.remove();
+  }
+}
+
+// keyToBytes translates a keydown into the bytes a terminal expects, or null to
+// let the browser handle the key normally.
+function keyToBytes(e) {
+  const k = e.key;
+  if (e.ctrlKey && !e.altKey && !e.metaKey) {
+    if (k.length === 1 && k >= "a" && k <= "z") return String.fromCharCode(k.charCodeAt(0) - 96);
+    if (k.length === 1 && k >= "A" && k <= "Z") return String.fromCharCode(k.charCodeAt(0) - 64);
+    const map = { " ": "\x00", "[": "\x1b", "]": "\x1d", "\\": "\x1c", "^": "\x1e", "_": "\x1f" };
+    if (map[k] !== undefined) return map[k];
+  }
+  if (e.altKey && !e.ctrlKey && !e.metaKey && k.length === 1) return "\x1b" + k;
+  switch (k) {
+    case "Enter": return "\r";
+    case "Backspace": return "\x7f";
+    case "Tab": return "\t";
+    case "Escape": return "\x1b";
+    case "ArrowUp": return "\x1b[A";
+    case "ArrowDown": return "\x1b[B";
+    case "ArrowRight": return "\x1b[C";
+    case "ArrowLeft": return "\x1b[D";
+    case "Home": return "\x1b[H";
+    case "End": return "\x1b[F";
+    case "PageUp": return "\x1b[5~";
+    case "PageDown": return "\x1b[6~";
+    case "Delete": return "\x1b[3~";
+    case "Insert": return "\x1b[2~";
+  }
+  if (e.metaKey) return null; // leave browser/OS shortcuts alone
+  if (k.length === 1) return k;
+  return null;
+}
+
+// ── the workspace: a grid of panes with add/remove and layout controls ──────
+const TermWorkspace = {
+  panes: [],
+  focusedPane: null,
+  cols: 1,
+  fontPx: 13,
+  charW: 0, charH: 0,
+  seq: 0,
+  started: false,
+
+  view() { return document.getElementById("termview"); },
+  panesEl() { return document.getElementById("termpanes"); },
+  visible() { return !this.view().hidden; },
+
+  open() {
+    // Dock below the builder instead of replacing it, so both stay visible.
+    this.view().hidden = false;
+    document.getElementById("termtoggle").setAttribute("aria-pressed", "true");
+    if (!this.started) {
+      this.started = true;
+      // In Reverse Shells mode start with two labelled panes side by side so you
+      // can keep one as the attacker (listener) and one as the victim machine.
+      if (typeof mode !== "undefined" && mode && mode.key === "revshell") {
+        this.setCols(2);
+        this.add(REV_ROLE.attacker, "attacker");
+        this.add(REV_ROLE.victim, "victim");
+      } else {
+        this.setCols(this.cols);
+        this.add();
+      }
+    }
+    // Re-measure now that the panes are visible (they had zero size while hidden).
+    this.measureCell();
+    for (const p of this.panes) p.fit(true);
+    if (this.focusedPane) this.focusedPane.focus();
+    else if (this.panes.length) this.panes[0].focus();
+  },
+
+  close() {
+    this.view().hidden = true;
+    document.getElementById("termtoggle").setAttribute("aria-pressed", "false");
+  },
+
+  toggle() { this.visible() ? this.close() : this.open(); },
+
+  // measureCell computes the pixel size of one character cell for the current
+  // font size, used to derive each pane's cols/rows.
+  measureCell() {
+    const ruler = document.createElement("span");
+    ruler.style.cssText = "position:absolute;visibility:hidden;white-space:pre;font:" + this.fontPx + "px/1.35 var(--mono)";
+    ruler.textContent = "MMMMMMMMMMMMMMMMMMMM"; // 20 chars
+    this.panesEl().appendChild(ruler);
+    const rect = ruler.getBoundingClientRect();
+    ruler.remove();
+    this.charW = rect.width / 20;
+    this.charH = this.fontPx * 1.35;
+  },
+
+  add(name, role) {
+    const pane = new Pane(this, ++this.seq, name, role);
+    this.panes.push(pane);
+    this.panesEl().appendChild(pane.el);
+    this._syncEmpty();
+    this.measureCell();
+    pane.fit(true);
+    this.setFocused(pane);
+    pane.focus();
+    return pane;
+  },
+
+  // paneForRole returns the attacker/victim pane, creating a labelled one if the
+  // user closed it (or the dock was first opened outside revshell mode).
+  paneForRole(role) {
+    let pane = this.panes.find((p) => p.role === role);
+    if (!pane) pane = this.add(REV_ROLE[role] || role, role);
+    return pane;
+  },
+
+  // sendToRole opens the dock (side-by-side) if needed, then types the command
+  // into the attacker or victim shell and runs it.
+  sendToRole(role, cmd) {
+    if (!this.visible()) this.open();
+    if (this.cols < 2) this.setCols(2);
+    const pane = this.paneForRole(role);
+    pane.focus();
+    pane.sendCommand(cmd);
+    return pane;
+  },
+
+  remove(pane) {
+    const i = this.panes.indexOf(pane);
+    if (i < 0) return;
+    pane.destroy();
+    this.panes.splice(i, 1);
+    if (this.focusedPane === pane) this.focusedPane = null;
+    this._syncEmpty();
+    if (this.panes.length) (this.panes[Math.min(i, this.panes.length - 1)]).focus();
+  },
+
+  _syncEmpty() {
+    const host = this.panesEl();
+    let empty = host.querySelector(".term-empty");
+    if (!this.panes.length) {
+      if (!empty) {
+        empty = document.createElement("div");
+        empty.className = "term-empty";
+        empty.textContent = "No terminals open. Press ＋ Split to start a shell.";
+        host.appendChild(empty);
+      }
+    } else if (empty) {
+      empty.remove();
+    }
+  },
+
+  setFocused(pane) {
+    if (this.focusedPane === pane) return;
+    this.focusedPane = pane;
+    for (const p of this.panes) p.el.classList.toggle("focused", p === pane);
+  },
+
+  setCols(n) {
+    this.cols = n;
+    this.panesEl().style.setProperty("--cols", n);
+    for (const b of document.querySelectorAll(".colbtn")) b.classList.toggle("active", +b.dataset.cols === n);
+    // Sizes changed; ResizeObserver will fire fit() for each pane.
+  },
+
+  setFont(px) {
+    this.fontPx = Math.max(9, Math.min(22, px));
+    for (const p of this.panes) p.screenEl.style.fontSize = this.fontPx + "px";
+    this.measureCell();
+    for (const p of this.panes) p.fit(true);
+  },
+};
+
+// Wire the workspace controls.
+document.getElementById("termtoggle").addEventListener("click", () => TermWorkspace.toggle());
+document.getElementById("term-close").addEventListener("click", () => TermWorkspace.close());
+document.getElementById("term-add").addEventListener("click", () => TermWorkspace.add());
+document.getElementById("term-font-up").addEventListener("click", () => TermWorkspace.setFont(TermWorkspace.fontPx + 1));
+document.getElementById("term-font-dn").addEventListener("click", () => TermWorkspace.setFont(TermWorkspace.fontPx - 1));
+for (const b of document.querySelectorAll(".colbtn")) {
+  b.addEventListener("click", () => TermWorkspace.setCols(+b.dataset.cols));
+}
+
+// Drag the grip to resize the terminal dock. It sits to the right of the
+// builder (resize width); on narrow screens it stacks below (resize height).
+// Each pane's ResizeObserver re-fits its shell automatically as the size changes.
+(function () {
+  const grip = document.getElementById("termgrip");
+  const view = document.getElementById("termview");
+  const main = document.querySelector(".main");
+  if (!grip || !view || !main) return;
+  grip.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    try { grip.setPointerCapture(e.pointerId); } catch {}
+    const sideBySide = getComputedStyle(main).flexDirection === "row";
+    const rect = view.getBoundingClientRect();
+    const startX = e.clientX, startY = e.clientY;
+    const startW = rect.width, startH = rect.height;
+    const onMove = (ev) => {
+      if (sideBySide) {
+        const dx = startX - ev.clientX;          // drag left → wider
+        const max = window.innerWidth - 320;     // leave room for the builder
+        view.style.height = "";
+        view.style.width = Math.max(220, Math.min(max, startW + dx)) + "px";
+      } else {
+        const dy = startY - ev.clientY;          // drag up → taller
+        const max = window.innerHeight - 160;
+        view.style.width = "";
+        view.style.height = Math.max(120, Math.min(max, startH + dy)) + "px";
+      }
+    };
+    const onUp = () => {
+      try { grip.releasePointerCapture(e.pointerId); } catch {}
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  });
+})();
+
+// ════════════════════════════════════════════════════════════════════════════
+// Application Map — an Obsidian-style canvas of the whole engagement.
+//
+// Every command run (from ANY catalog — setup/nmap, web, AD, linux) feeds the
+// active project's map:
+//   • nmap "scan report" + "PORT open" lines → host + port nodes
+//   • URLs → host + endpoint + param nodes
+//   • bare subdomain listings → subdomain nodes
+//   • AD (netexec/cme) protocol lines → host + domain nodes, plus user / cred /
+//     share nodes from enumerated accounts, valid logons and readable shares
+//   • nuclei severities, nmap "VULNERABLE", and [POC] lines → finding nodes
+// all linked into a tree rooted at the project's scope. Nodes are draggable;
+// the view pans (drag) and zooms (wheel). Maps are stored per project in
+// localStorage, so each engagement keeps its own. A seeded "★ Example map"
+// shows what a populated map looks like, and any map can be deleted.
+// ════════════════════════════════════════════════════════════════════════════
+const MAP_EXAMPLE = "★ Example map"; // reserved project name for the demo
+
+// Which column a node type sits in, left→right, for auto-layout.
+const MAP_COL = {
+  root: 0, domain: 0, subdomain: 1, host: 1, tech: 1,
+  port: 2, endpoint: 2, param: 3, user: 3, share: 3, cred: 3, finding: 3, note: 3,
+};
+const MAP_TYPE_LABEL = {
+  root: "scope", domain: "domain", subdomain: "subdomain", host: "host", port: "port",
+  endpoint: "endpoint", param: "param", user: "user", share: "share", cred: "cred",
+  finding: "finding", tech: "tech", note: "note",
+};
+
+// A ready-made map spanning all three catalogs so a first-time user sees the
+// shape immediately. Returned fresh each call so "reset example" restores it.
+function mapExampleData() {
+  return {
+    nodes: [
+      { id: "root:corp.local", type: "root", label: "CORP.LOCAL", sub: "engagement scope", x: 60, y: 300 },
+      { id: "host:dc01", type: "host", label: "DC01", sub: "10.10.0.1 · Domain Controller", x: 330, y: 90 },
+      { id: "host:web01", type: "host", label: "WEB01", sub: "10.10.0.20 · IIS 10", x: 330, y: 320 },
+      { id: "host:file01", type: "host", label: "FILE01", sub: "10.10.0.50", x: 330, y: 500 },
+      { id: "port:dc01:445", type: "port", label: "445/tcp smb", sub: "Windows Server 2019", x: 610, y: 40 },
+      { id: "port:dc01:88", type: "port", label: "88/tcp kerberos", sub: "", x: 610, y: 110 },
+      { id: "port:dc01:389", type: "port", label: "389/tcp ldap", sub: "", x: 610, y: 180 },
+      { id: "port:web01:443", type: "port", label: "443/tcp https", sub: "", x: 610, y: 300 },
+      { id: "port:file01:445", type: "port", label: "445/tcp smb", sub: "", x: 610, y: 500 },
+      { id: "ep:https://web01/login", type: "endpoint", label: "/login", sub: "web01", x: 610, y: 370 },
+      { id: "ep:https://web01/admin", type: "endpoint", label: "/admin", sub: "web01", x: 610, y: 430 },
+      { id: "param:redirect", type: "param", label: "redirect", sub: "on /login", x: 890, y: 370 },
+      { id: "user:jsmith", type: "user", label: "CORP\\jsmith", sub: "domain account", x: 890, y: 40 },
+      { id: "user:svc_sql", type: "user", label: "CORP\\svc_sql", sub: "service account (kerberoastable)", x: 890, y: 110 },
+      { id: "cred:admin", type: "cred", label: "CORP\\administrator", sub: "valid creds · Pwn3d!", x: 1180, y: 60 },
+      { id: "share:sysvol", type: "share", label: "SYSVOL", sub: "READ", x: 890, y: 190 },
+      { id: "share:backups", type: "share", label: "Backups", sub: "READ,WRITE", x: 890, y: 250 },
+      { id: "find:sqli", type: "finding", label: "SQLi on /login", sub: "high · web01", x: 1180, y: 370 },
+      { id: "find:ms17", type: "finding", label: "MS17-010 VULNERABLE", sub: "critical · FILE01", x: 890, y: 500 },
+    ],
+    edges: [
+      { from: "root:corp.local", to: "host:dc01" },
+      { from: "root:corp.local", to: "host:web01" },
+      { from: "root:corp.local", to: "host:file01" },
+      { from: "host:dc01", to: "port:dc01:445" },
+      { from: "host:dc01", to: "port:dc01:88" },
+      { from: "host:dc01", to: "port:dc01:389" },
+      { from: "host:web01", to: "port:web01:443" },
+      { from: "host:file01", to: "port:file01:445" },
+      { from: "host:web01", to: "ep:https://web01/login" },
+      { from: "host:web01", to: "ep:https://web01/admin" },
+      { from: "ep:https://web01/login", to: "param:redirect" },
+      { from: "ep:https://web01/login", to: "find:sqli" },
+      { from: "host:dc01", to: "user:jsmith" },
+      { from: "host:dc01", to: "user:svc_sql" },
+      { from: "host:dc01", to: "cred:admin" },
+      { from: "host:dc01", to: "share:sysvol" },
+      { from: "host:dc01", to: "share:backups" },
+      { from: "host:file01", to: "find:ms17" },
+    ],
+  };
+}
+
+const AppMap = {
+  project: undefined, // display name currently shown ("", MAP_EXAMPLE, or a real name)
+  tx: 40, ty: 40, scale: 1,
+  _els: new Map(), _edges: [], _data: { nodes: [], edges: [] },
+  _running: false, _runCmd: "", _runMode: "", _runLines: [], _lastProject: null,
+
+  // ── storage ───────────────────────────────────────────────────────────────
+  key(project) {
+    const slug = project === MAP_EXAMPLE ? "__example__" : project === "" ? "__none__" : encodeURIComponent(project);
+    return "ptmap:v1:" + slug;
+  },
+  safeGet(k) { try { return localStorage.getItem(k); } catch { return null; } },
+  safeSet(k, v) { try { localStorage.setItem(k, v); } catch {} },
+  safeDel(k) { try { localStorage.removeItem(k); } catch {} },
+  dismissed() { return this.safeGet("ptmap:v1:__example_dismissed__") === "1"; },
+  setDismissed(v) { v ? this.safeSet("ptmap:v1:__example_dismissed__", "1") : this.safeDel("ptmap:v1:__example_dismissed__"); },
+
+  load(project) {
+    const raw = this.safeGet(this.key(project));
+    if (raw) {
+      try {
+        const d = JSON.parse(raw);
+        if (d && Array.isArray(d.nodes) && Array.isArray(d.edges)) return d;
+      } catch {}
+    }
+    if (project === MAP_EXAMPLE && !this.dismissed()) {
+      const d = mapExampleData();
+      this.save(project, d);
+      return d;
+    }
+    return { nodes: [], edges: [] };
+  },
+  save(project, data) { this.safeSet(this.key(project), JSON.stringify(data)); },
+  seedExample() { this.setDismissed(false); this.save(MAP_EXAMPLE, mapExampleData()); },
+  clear(project) { this.safeDel(this.key(project)); if (project === MAP_EXAMPLE) this.setDismissed(true); },
+
+  // ── helpers ───────────────────────────────────────────────────────────────
+  hostOf(s) {
+    if (!s) return "";
+    s = String(s).trim().replace(/^[a-z][a-z0-9+.-]*:\/\//i, "");
+    s = s.split(/[\/?#]/)[0].split(":")[0].replace(/^\*\./, "");
+    return s.toLowerCase();
+  },
+  hash(s) { let h = 0; for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0; return (h >>> 0).toString(36); },
+  place(data, type) {
+    const col = MAP_COL[type] ?? 3;
+    const count = data.nodes.filter((n) => (MAP_COL[n.type] ?? 3) === col).length;
+    return { x: 70 + col * 285, y: 60 + count * 84 };
+  },
+  rootFor(project, cmd) {
+    const p = (PROJECTS || []).find((p) => p.name === project);
+    if (p && p.in_scope && p.in_scope.length) {
+      const s0 = String(p.in_scope[0]).trim();
+      if (/^\d{1,3}(?:\.\d{1,3}){3}(?:\/\d{1,2})?$/.test(s0)) return s0;
+      const h = this.hostOf(s0); if (h) return h;
+    }
+    if (cmd) {
+      let m = cmd.match(/\s-d\s+([^\s'"]+)/) || cmd.match(/--domain[=\s]+([^\s'"]+)/);
+      if (m) return this.hostOf(m[1]);
+      m = cmd.match(/https?:\/\/[^\s'"]+/);
+      if (m) return this.hostOf(m[0]);
+      m = cmd.match(/\b(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}\b/i);
+      if (m) return m[0].toLowerCase();
+      m = cmd.match(/\b\d{1,3}(?:\.\d{1,3}){3}(?:\/\d{1,2})?\b/);
+      if (m) return m[0];
+    }
+    return "";
+  },
+
+  // ── ingest a finished run into the project's map ────────────────────────────
+  beginRun(cmd, modeKey) { this._running = true; this._runCmd = cmd || ""; this._runMode = modeKey || ""; this._runLines = []; },
+  pushLine(l) { if (this._running && this._runLines.length < 8000) this._runLines.push(l); },
+  endRun(project) {
+    if (!this._running) return;
+    this._running = false;
+    this._lastProject = project; // so opening the map tab lands on this project
+    const added = this.ingest(this._runCmd, this._runLines, project, this._runMode);
+    this._runLines = [];
+    if (added > 0) {
+      toast("Application map +" + added + (added === 1 ? " node" : " nodes"));
+      if (!document.getElementById("mapview").hidden && this.project === project) this.render();
+    }
+  },
+  ingest(cmd, lines, project, modeKey) {
+    const data = this.load(project);
+    const before = data.nodes.length;
+    const CAP = 400;
+    // Strip ANSI colour codes first — ffuf, gobuster, nuclei etc. run colourised
+    // by default, and the escape sequences otherwise break every line match.
+    const stripAnsi = (s) => String(s).replace(/\u001b\[[0-9;?]*[ -\/]*[@-~]/g, "");
+    lines = (lines || []).map(stripAnsi);
+    const root = this.rootFor(project, cmd);
+    const add = (id, props) => {
+      let n = data.nodes.find((x) => x.id === id);
+      if (n) { if (props.sub && !n.sub) n.sub = props.sub; return n; }
+      if (data.nodes.length >= CAP) return null;
+      n = Object.assign({ id, x: 0, y: 0 }, props);
+      const p = this.place(data, n.type);
+      n.x = p.x; n.y = p.y;
+      data.nodes.push(n);
+      return n;
+    };
+    const link = (a, b) => {
+      if (!a || !b || a === b) return;
+      if (!data.edges.some((e) => e.from === a && e.to === b)) data.edges.push({ from: a, to: b });
+    };
+    let rootId = "";
+    if (root) { const rn = add("root:" + root, { type: "root", label: root, sub: "scope" }); rootId = rn ? rn.id : ""; }
+    const isDomainRoot = root && /[a-z]/i.test(root) && !/^\d/.test(root);
+    const ensureHost = (h) => {
+      if (!h) return "";
+      h = h.toLowerCase();
+      if (root && h === String(root).toLowerCase()) return rootId;
+      const type = isDomainRoot && h.endsWith("." + String(root).toLowerCase()) ? "subdomain" : "host";
+      const n = add("host:" + h, { type, label: h });
+      if (!n) return "";
+      link(rootId, n.id);
+      return n.id;
+    };
+
+    // Target taken from the command itself, so path-only output (gobuster, ffuf,
+    // nikto, sqlmap, arjun — which print paths/params, not full URLs) attaches to
+    // the right host instead of floating free.
+    let cmdBase = null; // { origin, host, fuzzPath }
+    {
+      const mu = cmd.match(/(?:^|\s)(?:-u|--url|-h|--host|--targets?)[=\s]+['"]?([^\s'"]+)/i)
+              || cmd.match(/https?:\/\/[^\s'"]+/);
+      let v = mu ? (mu[1] || mu[0]) : "";
+      if (v) {
+        try {
+          const uu = new URL(/^https?:\/\//i.test(v) ? v : "http://" + v);
+          // ffuf puts a FUZZ keyword where the wordlist entry goes. When it sits
+          // in the path (e.g. /api/FUZZ or /FUZZ.php) we keep the template so a
+          // discovered word rebuilds the full path, not just "/word".
+          cmdBase = { origin: uu.origin, host: uu.hostname.toLowerCase(), fuzzPath: /FUZZ/.test(uu.pathname) ? uu.pathname : "" };
+        } catch {}
+      }
+    }
+    const baseHostId = () => (cmdBase ? ensureHost(cmdBase.host) : rootId);
+    let epCount = 0, paramCount = 0;
+    const addEndpoint = (origin, path, hostId, subHost) => {
+      if (epCount >= 150) return null;
+      if (/FUZZ/.test(path)) return null; // the unexpanded ffuf keyword (e.g. banner's ":: URL : …/FUZZ")
+      const en = add("ep:" + origin + path, { type: "endpoint", label: path, sub: subHost });
+      if (en) { epCount++; link(hostId, en.id); }
+      return en;
+    };
+    const addParam = (origin, path, key, epId, where) => {
+      if (paramCount >= 120) return null;
+      const pn = add("param:" + origin + path + "#" + key, { type: "param", label: key, sub: where });
+      if (pn) { paramCount++; link(epId || baseHostId(), pn.id); }
+      return pn;
+    };
+
+    // ── nmap: scan report (host) + PORT/STATE/SERVICE lines ───────────────────
+    let curHost = "";
+    for (const raw of lines) {
+      const t = raw.trim();
+      let m = t.match(/^Nmap scan report for\s+(.+)$/i);
+      if (m) {
+        let rest = m[1].trim(), name = rest, ip = "";
+        const mm = rest.match(/^(.*?)\s+\(([\d.]+)\)$/);
+        if (mm) { name = mm[1]; ip = mm[2]; }
+        curHost = ensureHost(ip || name);
+        if (mm) { const hn = data.nodes.find((n) => n.id === curHost); if (hn && !hn.sub) hn.sub = name; }
+        continue;
+      }
+      m = t.match(/^(\d{1,5})\/(tcp|udp)\s+(?:open|open\|filtered)\s+(\S+)(?:\s+(.*))?$/i);
+      if (m) {
+        const base = curHost || rootId || "host";
+        const pn = add("port:" + base + ":" + m[1] + "/" + m[2].toLowerCase(),
+          { type: "port", label: m[1] + "/" + m[2].toLowerCase() + " " + m[3], sub: (m[4] || "").trim() });
+        if (pn) link(curHost || rootId, pn.id);
+        continue;
+      }
+    }
+
+    // ── web: full URLs → host + endpoint + params (httpx, katana, gau, nuclei…)
+    const text = lines.join("\n");
+    const urlRe = /\bhttps?:\/\/[^\s"'<>)\]]+/gi;
+    const seen = new Set();
+    let um;
+    while ((um = urlRe.exec(text))) {
+      const u = um[0].replace(/[.,;]+$/, "");
+      if (seen.has(u)) continue;
+      seen.add(u);
+      let url; try { url = new URL(u); } catch { continue; }
+      const hid = ensureHost(url.hostname.toLowerCase());
+      const path = url.pathname || "/";
+      const en = addEndpoint(url.origin, path, hid, url.hostname.toLowerCase());
+      if (en) {
+        let pc = 0;
+        url.searchParams.forEach((v, k) => {
+          if (pc++ > 8) return;
+          addParam(url.origin, path, k, en.id, "on " + path);
+        });
+      }
+    }
+
+    // ── per-line web/recon parsers ────────────────────────────────────────────
+    const techOf = (tok) => tok.trim().replace(/:[\d.]+$/, "");
+    const KNOWN_TECH = /^(nginx|apache|iis|tomcat|jetty|express|php|asp\.net|aspnet|node\.js|react|angular|vue|wordpress|drupal|joomla|laravel|django|flask|rails|cloudflare|akamai|fastly|varnish|openssl|jquery|bootstrap|litespeed|gunicorn|werkzeug|kestrel|envoy|haproxy|windows|ubuntu|debian|centos|google|amazon|aws|azure)/i;
+    for (const raw of lines) {
+      const t = raw.trim();
+      if (!t) continue;
+      const low = t.toLowerCase().replace(/^\*\./, "");
+
+      // bare subdomain / FQDN listing (subfinder, amass, assetfinder, dnsx)
+      if (/^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$/.test(low)) { ensureHost(low); continue; }
+
+      // host:port (naabu)  →  host + port node
+      let m = t.match(/^((?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}|\d{1,3}(?:\.\d{1,3}){3}):(\d{1,5})$/i);
+      if (m) {
+        const hid = ensureHost(m[1].toLowerCase());
+        const pn = add("port:" + m[1].toLowerCase() + ":" + m[2] + "/tcp", { type: "port", label: m[2] + "/tcp", sub: "naabu" });
+        if (pn) link(hid || rootId, pn.id);
+        continue;
+      }
+
+      // dnsx -resp:  sub.example.com [A] 1.2.3.4   /   [CNAME] foo.cdn.net
+      m = t.match(/^(\S+?)\s+\[(A|AAAA|CNAME)\]\s+(\S+)/i);
+      if (m && /[a-z]/i.test(m[1])) {
+        const hid = ensureHost(this.hostOf(m[1]));
+        if (/cname/i.test(m[2]) && hid) { const hn = data.nodes.find((n) => n.id === hid); if (hn && !hn.sub) hn.sub = "CNAME → " + m[3]; }
+        continue;
+      }
+
+      // path + status (gobuster dir, ffuf, dirsearch, feroxbuster)
+      m = t.match(/^(\S+)\s+[\[(]Status:\s*(\d{3})/i) || t.match(/^(?:\d{3}|\[\d+:\d+:\d+\]\s+\d{3})\s+\S*\s+(\/\S+)/);
+      if (m && cmdBase) {
+        let tok = m[1] || m[2];
+        if (tok && !/^\d{3}$/.test(tok)) {
+          let p;
+          if (tok.startsWith("http")) { try { p = new URL(tok).pathname; } catch { p = "/" + tok; } }
+          else if (tok.startsWith("/")) p = tok;
+          else if (cmdBase.fuzzPath) p = cmdBase.fuzzPath.replace(/FUZZ/g, tok); // ffuf: rebuild /base/word from /base/FUZZ
+          else p = "/" + tok;
+          p = p.split("?")[0];
+          const st = (t.match(/Status:\s*(\d{3})/i) || t.match(/\b(\d{3})\b/) || [])[1] || "";
+          const en = addEndpoint(cmdBase.origin, p, baseHostId(), cmdBase.host + (st ? " · " + st : ""));
+          if (en && st) { const n = data.nodes.find((x) => x.id === en.id); if (n) n.sub = cmdBase.host + " · " + st; }
+          continue;
+        }
+      }
+
+      // arjun: discovered parameters
+      m = t.match(/parameters?\s+found\s*:?\s*(.+)$/i) || t.match(/valid parameter\s*:?\s*['"]?([a-z0-9_\-\[\]]+)/i);
+      if (m && cmdBase) {
+        const names = m[1].split(/[,\s]+/).map((s) => s.replace(/['"]/g, "")).filter((s) => /^[a-z0-9_\-\[\]]{1,40}$/i.test(s)).slice(0, 12);
+        const path = (() => { try { return (new URL(cmdBase.origin + "/")).pathname; } catch { return "/"; } })();
+        for (const k of names) addParam(cmdBase.origin, path, k, null, "arjun");
+        if (names.length) continue;
+      }
+
+      // sqlmap: vulnerable parameter  →  param + finding
+      m = t.match(/(?:GET|POST|Cookie|URI)?\s*parameter\s+'?([a-z0-9_\-\[\]]+)'?\s+is vulnerable/i)
+       || t.match(/^Parameter:\s*([a-z0-9_\-\[\]]+)\s*\(/i);
+      if (m) {
+        const k = m[1];
+        const path = cmdBase ? (() => { try { return (new URL(cmdBase.origin + "/")).pathname; } catch { return "/"; } })() : "/";
+        const pn = addParam(cmdBase ? cmdBase.origin : "sqlmap", path, k, null, "sqlmap");
+        if (/is vulnerable/i.test(t)) {
+          const fn = add("find:" + this.hash("sqli:" + k), { type: "finding", label: "SQL injection · param " + k, sub: "sqlmap · high" });
+          if (fn) link(pn ? pn.id : baseHostId(), fn.id);
+        }
+        continue;
+      }
+
+      // nikto: '+ /path: note'  →  endpoint (+ finding if it reads vuln-ish)
+      m = t.match(/^\+\s+(\/\S*)\s*:\s*(.+)$/);
+      if (m && cmdBase) {
+        const en = addEndpoint(cmdBase.origin, m[1].split("?")[0], baseHostId(), "nikto");
+        if (en && /(vulnerab|outdated|XSS|CVE|injection|disclosure|default|backup|traversal)/i.test(m[2])) {
+          const fn = add("find:" + this.hash(t), { type: "finding", label: (m[1] + ": " + m[2]).slice(0, 72), sub: "nikto" });
+          if (fn) link(en.id, fn.id);
+        }
+        continue;
+      }
+
+      // httpx -tech-detect / whatweb: technologies in [brackets] on a URL line
+      if (/\[.*\]/.test(t) && (cmdBase || /https?:\/\//i.test(t))) {
+        const host = cmdBase ? cmdBase.host : this.hostOf((t.match(/https?:\/\/\S+/) || [""])[0]);
+        const hid = host ? ensureHost(host) : rootId;
+        const groups = t.match(/\[([^\]]+)\]/g) || [];
+        for (const g of groups) {
+          const inner = g.slice(1, -1);
+          if (/^\d+$/.test(inner)) continue; // status code
+          const toks = inner.split(",").map((s) => s.trim()).filter(Boolean);
+          const isTech = toks.length > 1 || (toks[0] && KNOWN_TECH.test(toks[0]));
+          if (!isTech) continue;
+          for (const tk of toks.slice(0, 8)) {
+            const name = techOf(tk);
+            if (!name || name.length > 28 || /\s{2,}/.test(name)) continue;
+            const tn = add("tech:" + (host || "x") + ":" + name.toLowerCase(), { type: "tech", label: name, sub: host || "tech" });
+            if (tn) link(hid, tn.id);
+          }
+        }
+      }
+    }
+
+    // ── AD: netexec / crackmapexec output (hosts, domains, creds, shares, users)
+    if (modeKey === "ad") {
+      for (const raw of lines) {
+        const t = raw.trim();
+        // Protocol host line:  SMB  10.0.0.5  445  DC01  [*] Windows ... (domain:CORP.LOCAL)
+        let m = t.match(/^(SMB|LDAP|WINRM|RDP|MSSQL|SSH|FTP|NFS|WMI)\s+(\S+)\s+\d+\s+(\S+)\s+\[[*+\-!]\]\s*(.*)$/i);
+        if (m) {
+          const ip = m[2], nb = m[3], info = m[4];
+          const hid = ensureHost(ip);
+          const hn = data.nodes.find((n) => n.id === hid);
+          const dm = info.match(/\(domain:([^)]+)\)/i);
+          if (dm) {
+            const dn = add("domain:" + dm[1].toLowerCase(), { type: "domain", label: dm[1], sub: "AD domain" });
+            if (dn) { link(rootId, dn.id); link(dn.id, hid); }
+          }
+          const osm = info.match(/(Windows[^()]*?)(?:\s*\(|$)/i);
+          if (hn && osm) hn.sub = (nb && nb !== "." ? nb + " · " : "") + osm[1].trim();
+          else if (hn && nb && nb !== "." && !hn.sub) hn.sub = nb;
+          continue;
+        }
+        // Valid credentials:  [+] CORP.LOCAL\user:password  (Pwn3d!)
+        m = t.match(/\[\+\]\s+([A-Za-z0-9.\-]+)\\([A-Za-z0-9._$\-]+):(\S+?)(\s+\(Pwn3d!\))?$/);
+        if (m) {
+          const dom = m[1], user = m[2], pwn = !!m[4];
+          const un = add("user:" + dom.toLowerCase() + "\\" + user.toLowerCase(),
+            { type: pwn ? "cred" : "cred", label: dom + "\\" + user, sub: pwn ? "valid creds · Pwn3d!" : "valid creds" });
+          const dn = data.nodes.find((n) => n.id === "domain:" + dom.toLowerCase());
+          if (un) link(dn ? dn.id : rootId, un.id);
+          continue;
+        }
+        // Readable/writable share:  SYSVOL  READ  Logon server share
+        m = t.match(/^(\S+)\s+(READ,WRITE|READ|WRITE)\b(?:\s+(.*))?$/i);
+        if (m && m[1].toLowerCase() !== "share" && !/permission/i.test(t)) {
+          const sn = add("share:" + m[1].toLowerCase(), { type: "share", label: m[1], sub: m[2].toUpperCase() });
+          if (sn) link(rootId, sn.id);
+          continue;
+        }
+        // Enumerated domain account:  CORP.LOCAL\username
+        m = t.match(/(?:^|\s)([A-Za-z][A-Za-z0-9.\-]+)\\([A-Za-z0-9._$\-]+)(?=\s|$)/);
+        if (m && !/\[[+*\-!]\]/.test(t)) {
+          const un = add("user:" + m[1].toLowerCase() + "\\" + m[2].toLowerCase(),
+            { type: "user", label: m[1] + "\\" + m[2], sub: "domain account" });
+          const dn = data.nodes.find((n) => n.id === "domain:" + m[1].toLowerCase());
+          if (un) link(dn ? dn.id : rootId, un.id);
+          continue;
+        }
+      }
+    }
+
+    // ── findings: nuclei severities, nmap VULNERABLE, [POC] lines ─────────────
+    for (const raw of lines) {
+      const t = raw.trim();
+      if (!t) continue;
+      const sev = t.match(/\[(critical|high|medium|low|info)\]/i);
+      const vuln = /\bVULNERABLE\b/.test(t);
+      const poc = /\[POC\]/i.test(t);
+      if (!sev && !vuln && !poc) continue;
+      const urlm = t.match(/https?:\/\/[^\s"'<>)\]]+/);
+      const ipm = t.match(/\b\d{1,3}(?:\.\d{1,3}){3}\b/);
+      let linkTo = rootId;
+      if (urlm) { try { linkTo = ensureHost(new URL(urlm[0]).hostname.toLowerCase()) || rootId; } catch {} }
+      else if (ipm) { linkTo = ensureHost(ipm[0]) || rootId; }
+      const label = t.length > 72 ? t.slice(0, 69) + "…" : t;
+      const fn = add("find:" + this.hash(t), { type: "finding", label, sub: sev ? sev[1].toLowerCase() : vuln ? "vulnerable" : "poc" });
+      if (fn) link(linkTo, fn.id);
+    }
+
+    this.save(project, data);
+    return data.nodes.length - before;
+  },
+
+  // ── rendering ───────────────────────────────────────────────────────────────
+  current() { return this._data; },
+  render() {
+    this._data = this.load(this.project);
+    const world = document.getElementById("map-world");
+    const empty = document.getElementById("map-empty");
+    if (!world) return;
+    world.querySelectorAll(".mnode").forEach((n) => n.remove());
+    this._els = new Map();
+    this._edges = this._data.edges || [];
+    for (const nd of this._data.nodes) {
+      const el = this.nodeEl(nd);
+      world.append(el);
+      this._els.set(nd.id, el);
+    }
+    this.renderEdges();
+    const count = document.getElementById("map-count");
+    if (count) count.textContent = this._data.nodes.length + " nodes · " + (this._data.edges || []).length + " links";
+    if (empty) {
+      const none = !this._data.nodes.length;
+      empty.hidden = !none;
+      if (none) {
+        empty.innerHTML =
+          '<div class="big">No map yet for this project.</div>' +
+          "<div>Run a command from any catalog with this project active — hosts &amp; subdomains, ports, endpoints &amp; params, tech, and findings (sqlmap / nuclei / nikto / dalfox) appear here as a canvas of attack vectors you can rearrange.</div>" +
+          "<div>Want to see what that looks like? Click <b>★ Example</b> above.</div>";
+      }
+    }
+  },
+  nodeEl(nd) {
+    const el = document.createElement("div");
+    el.className = "mnode type-" + (nd.type || "note");
+    el.style.left = nd.x + "px";
+    el.style.top = nd.y + "px";
+    el.innerHTML =
+      '<button class="mx" title="Delete node" aria-label="Delete node">✕</button>' +
+      '<div class="mtype"></div><div class="mlabel"></div>' +
+      (nd.sub ? '<div class="msub"></div>' : "");
+    el.querySelector(".mtype").textContent = MAP_TYPE_LABEL[nd.type] || "node";
+    el.querySelector(".mlabel").textContent = nd.label || nd.id;
+    if (nd.sub) el.querySelector(".msub").textContent = nd.sub;
+    const x = el.querySelector(".mx");
+    x.addEventListener("pointerdown", (e) => e.stopPropagation());
+    x.addEventListener("click", (e) => { e.stopPropagation(); this.deleteNode(nd.id); });
+    el.addEventListener("dblclick", (e) => { e.preventDefault(); this.renameNode(nd.id); });
+    this.attachDrag(el, nd);
+    return el;
+  },
+  attachDrag(el, nd) {
+    el.addEventListener("pointerdown", (e) => {
+      if (e.button !== 0) return;
+      e.stopPropagation();
+      try { el.setPointerCapture(e.pointerId); } catch {}
+      el.classList.add("dragging");
+      const sx = e.clientX, sy = e.clientY, x0 = nd.x, y0 = nd.y;
+      let moved = false;
+      const onMove = (ev) => {
+        nd.x = Math.round(x0 + (ev.clientX - sx) / this.scale);
+        nd.y = Math.round(y0 + (ev.clientY - sy) / this.scale);
+        el.style.left = nd.x + "px";
+        el.style.top = nd.y + "px";
+        moved = true;
+        this.renderEdges();
+      };
+      const onUp = () => {
+        el.classList.remove("dragging");
+        el.removeEventListener("pointermove", onMove);
+        el.removeEventListener("pointerup", onUp);
+        if (moved) this.save(this.project, this._data);
+      };
+      el.addEventListener("pointermove", onMove);
+      el.addEventListener("pointerup", onUp);
+    });
+  },
+  renderEdges() {
+    const svg = document.getElementById("map-edges");
+    if (!svg) return;
+    svg.replaceChildren();
+    for (const e of this._edges || []) {
+      const a = this._els.get(e.from), b = this._els.get(e.to);
+      if (!a || !b) continue;
+      const x1 = a.offsetLeft + a.offsetWidth / 2, y1 = a.offsetTop + a.offsetHeight / 2;
+      const x2 = b.offsetLeft + b.offsetWidth / 2, y2 = b.offsetTop + b.offsetHeight / 2;
+      const mx = (x1 + x2) / 2;
+      const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      path.setAttribute("d", "M" + x1 + " " + y1 + " C " + mx + " " + y1 + " " + mx + " " + y2 + " " + x2 + " " + y2);
+      svg.append(path);
+    }
+  },
+  apply() {
+    const w = document.getElementById("map-world");
+    if (w) w.style.transform = "translate(" + this.tx + "px," + this.ty + "px) scale(" + this.scale + ")";
+  },
+  fit() {
+    const data = this._data;
+    const cv = document.getElementById("map-canvas");
+    if (!cv) return;
+    if (!data.nodes.length) { this.tx = 40; this.ty = 40; this.scale = 1; this.apply(); return; }
+    let minx = 1e9, miny = 1e9, maxx = -1e9, maxy = -1e9;
+    for (const nd of data.nodes) {
+      const el = this._els.get(nd.id);
+      const w = el ? el.offsetWidth : 190, h = el ? el.offsetHeight : 60;
+      minx = Math.min(minx, nd.x); miny = Math.min(miny, nd.y);
+      maxx = Math.max(maxx, nd.x + w); maxy = Math.max(maxy, nd.y + h);
+    }
+    const cw = cv.clientWidth, ch = cv.clientHeight, pad = 60;
+    const s = Math.min(cw / (maxx - minx + pad * 2), ch / (maxy - miny + pad * 2), 1.2);
+    this.scale = Math.max(0.25, s || 1);
+    this.tx = (cw - (maxx - minx) * this.scale) / 2 - minx * this.scale;
+    this.ty = (ch - (maxy - miny) * this.scale) / 2 - miny * this.scale;
+    this.apply();
+  },
+
+  // ── node editing ────────────────────────────────────────────────────────────
+  addNode() {
+    const name = prompt("Node label:", "");
+    if (name === null) return;
+    const cv = document.getElementById("map-canvas");
+    const wx = Math.round((cv.clientWidth / 2 - this.tx) / this.scale - 95);
+    const wy = Math.round((cv.clientHeight / 2 - this.ty) / this.scale - 25);
+    this._data = this.load(this.project);
+    this._data.nodes.push({ id: "note:" + this.hash(name + Date.now()), type: "note", label: name || "note", x: wx, y: wy });
+    this.save(this.project, this._data);
+    this.render();
+  },
+  renameNode(id) {
+    this._data = this.load(this.project);
+    const n = this._data.nodes.find((x) => x.id === id);
+    if (!n) return;
+    const name = prompt("Rename node:", n.label || "");
+    if (name === null) return;
+    n.label = name;
+    this.save(this.project, this._data);
+    this.render();
+  },
+  deleteNode(id) {
+    this._data = this.load(this.project);
+    this._data.nodes = this._data.nodes.filter((n) => n.id !== id);
+    this._data.edges = this._data.edges.filter((e) => e.from !== id && e.to !== id);
+    this.save(this.project, this._data);
+    this.render();
+  },
+
+  // ── tab entry point ─────────────────────────────────────────────────────────
+  show() {
+    const sel = document.getElementById("map-project");
+    if (!sel) return;
+    sel.replaceChildren();
+    sel.append(new Option("★ Example map", MAP_EXAMPLE));
+    sel.append(new Option("— no project —", ""));
+    for (const p of PROJECTS || []) sel.append(new Option(p.name, p.name));
+    const vals = [...sel.options].map((o) => o.value);
+    if (this.project === undefined || this.project === null) {
+      const cand = this._lastProject != null ? this._lastProject : activeProject;
+      this.project = cand != null && this.load(cand).nodes.length ? cand : MAP_EXAMPLE;
+    }
+    if (!vals.includes(this.project)) this.project = activeProject && vals.includes(activeProject) ? activeProject : MAP_EXAMPLE;
+    sel.value = this.project;
+    this.render();
+    this.fit();
+  },
+};
+
+// Wire the map toolbar + canvas interactions once.
+(function () {
+  const sel = document.getElementById("map-project");
+  const cv = document.getElementById("map-canvas");
+  if (!sel || !cv) return;
+  sel.addEventListener("change", () => { AppMap.project = sel.value; AppMap.render(); AppMap.fit(); });
+  document.getElementById("map-add").addEventListener("click", () => AppMap.addNode());
+  document.getElementById("map-fit").addEventListener("click", () => AppMap.fit());
+  document.getElementById("map-example").addEventListener("click", () => {
+    AppMap.project = MAP_EXAMPLE;
+    AppMap.seedExample();
+    AppMap.show();
+    toast("Example map loaded");
+  });
+  document.getElementById("map-delete").addEventListener("click", () => {
+    const p = AppMap.project;
+    const label = p === MAP_EXAMPLE ? "the example map" : p === "" ? "the no-project map" : 'the map for "' + p + '"';
+    if (!confirm("Delete " + label + "? This can't be undone.")) return;
+    AppMap.clear(p);
+    AppMap.render();
+    AppMap.fit();
+    toast("Map deleted");
+  });
+
+  // Pan by dragging the background; zoom with the wheel (centred on the cursor).
+  cv.addEventListener("pointerdown", (e) => {
+    if (e.target.closest(".mnode")) return;
+    cv.classList.add("panning");
+    const sx = e.clientX, sy = e.clientY, tx0 = AppMap.tx, ty0 = AppMap.ty;
+    try { cv.setPointerCapture(e.pointerId); } catch {}
+    const mv = (ev) => { AppMap.tx = tx0 + (ev.clientX - sx); AppMap.ty = ty0 + (ev.clientY - sy); AppMap.apply(); };
+    const up = () => { cv.classList.remove("panning"); cv.removeEventListener("pointermove", mv); cv.removeEventListener("pointerup", up); };
+    cv.addEventListener("pointermove", mv);
+    cv.addEventListener("pointerup", up);
+  });
+  cv.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    const rect = cv.getBoundingClientRect();
+    const px = e.clientX - rect.left, py = e.clientY - rect.top;
+    const os = AppMap.scale;
+    let ns = os * (e.deltaY < 0 ? 1.1 : 1 / 1.1);
+    ns = Math.max(0.2, Math.min(2.5, ns));
+    AppMap.tx = px - (px - AppMap.tx) * (ns / os);
+    AppMap.ty = py - (py - AppMap.ty) * (ns / os);
+    AppMap.scale = ns;
+    AppMap.apply();
+  }, { passive: false });
+})();
+
+// ── boot ────────────────────────────────────────────────────────────────────
+// parseHash splits #<mode>/<slug> (slug optional, mode optional for back-compat).
+function parseHash() {
+  const raw = decodeURIComponent(location.hash.slice(1));
+  const slash = raw.indexOf("/");
+  if (slash >= 0 && MODE_BY_KEY.has(raw.slice(0, slash))) {
+    return { key: raw.slice(0, slash), slug: raw.slice(slash + 1) };
+  }
+  return { key: null, slug: raw }; // no/unknown mode prefix: treat as a slug
+}
+
+const boot = parseHash();
+if (boot.key && MODE_BY_KEY.has(boot.key)) {
+  mode = MODE_BY_KEY.get(boot.key);
+  CATALOG = mode.catalog;
+  PROJECTS = mode.projects;
+  bySlug = mode.bySlug;
+  activeProject = mode.activeProject;
+}
+// Wire the persistent output panel once. The console element is never
+// recreated, so output persists across tool and catalog switches until the
+// user clears it here.
+document.getElementById("clear").addEventListener("click", () => {
+  consoleEl().replaceChildren();
+  setConsoleHint();
+});
+setConsoleHint();
+
+renderModeToggle();
+syncModeChrome();
+applyFilter();
+const bootTool = (boot.slug && bySlug.get(boot.slug)) || shown[0] || CATALOG[0] || null;
+if (bootTool) select(bootTool);
+
+window.addEventListener("hashchange", () => {
+  const h = parseHash();
+  if (h.key && h.key !== mode.key) activateMode(h.key);
+  const t = h.slug && bySlug.get(h.slug);
+  if (t && t !== current) select(t);
+});
+</script>
+
+</body>
+</html>

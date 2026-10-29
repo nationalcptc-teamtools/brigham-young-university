@@ -1,0 +1,47 @@
+Copyright (c) 2026 Xander Whitby. All rights reserved.
+
+PROPRIETARY SOFTWARE LICENSE
+
+This software and its source code (the "Software") are the proprietary and
+confidential property of the copyright holder. The Software is licensed, not
+sold.
+
+1. Grant. Subject to a valid, paid subscription or license purchased from the
+   copyright holder, you are granted a non-exclusive, non-transferable,
+   revocable license to install and use the Software for your own authorized
+   security testing, in accordance with the terms of your subscription.
+
+2. Restrictions. You may not, except to the extent this restriction is
+   prohibited by applicable law:
+   (a) copy, redistribute, sublicense, rent, lease, sell, or otherwise make the
+       Software available to any third party;
+   (b) modify, adapt, translate, or create derivative works of the Software;
+   (c) reverse engineer, decompile, or disassemble the Software, or attempt to
+       derive its source code;
+   (d) remove, obscure, or alter any proprietary notices; or
+   (e) circumvent, disable, or tamper with any licensing, entitlement, or usage
+       controls in the Software.
+
+3. Acceptable use. The Software assembles and runs offensive-security tooling.
+   You may use it ONLY against systems you own or are explicitly authorized in
+   writing to test. You are solely responsible for your use of the Software and
+   for complying with all applicable laws.
+
+4. Third-party components. The Software incorporates third-party open-source
+   components, each licensed under its own terms. See THIRD_PARTY_LICENSES.md.
+   Those terms govern those components and nothing in this license limits any
+   rights you have under them.
+
+5. No warranty. THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+   EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+   MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT.
+
+6. Limitation of liability. TO THE MAXIMUM EXTENT PERMITTED BY LAW, IN NO EVENT
+   SHALL THE COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER
+   LIABILITY ARISING FROM OR IN CONNECTION WITH THE SOFTWARE OR ITS USE.
+
+7. Termination. This license terminates automatically if you breach it or if
+   your subscription lapses. On termination you must cease all use and destroy
+   all copies of the Software.
+
+For licensing inquiries, contact the copyright holder.

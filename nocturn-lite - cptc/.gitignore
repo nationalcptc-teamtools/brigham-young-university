@@ -1,0 +1,5 @@
+/web
+.gocache/
+.gotmp/
+.env
+/web-test
