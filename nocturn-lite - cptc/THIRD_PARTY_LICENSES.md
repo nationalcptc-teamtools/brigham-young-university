@@ -92,7 +92,9 @@ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-## Bundled wordlists
+## Wordlists
 
-The `wordlists/` directory is derived from third-party data sets. See
-`wordlists/ATTRIBUTION.md` for their sources and terms.
+No wordlists are bundled or redistributed with this project. At runtime the app
+references wordlists already installed on the Kali host (under
+`/usr/share/wordlists`: `dirb`, `dirbuster`, `seclists`), each under its own
+upstream license.

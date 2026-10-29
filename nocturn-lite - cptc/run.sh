@@ -96,8 +96,14 @@ fi
 # usually pipx/pip installs under ~/.local/bin.
 export PATH="$PATH:$HOME/.local/bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/sbin"
 
-# Optional: point ffuf/gobuster at a system SecLists install instead of the
-# bundled ./wordlists dir. Uncomment and adjust if you keep SecLists elsewhere.
-# export PENTEST_TUI_WORDLISTS="$HOME/tools/SecLists"
+# Wordlists are whatever Kali already ships — nothing is bundled or installed.
+# The TUI defaults ffuf/gobuster/kerbrute at paths under /usr/share/wordlists
+# (dirb, dirbuster, and the seclists symlink), so they resolve out of the box on
+# a default Kali install. Just warn if that directory isn't there; the user can
+# still pick a different list in the UI, or point PENTEST_TUI_WORDLISTS at one.
+if [ -z "${PENTEST_TUI_WORDLISTS:-}" ] && [ ! -d /usr/share/wordlists ]; then
+	echo "run.sh: /usr/share/wordlists not found — wordlist defaults may not resolve." >&2
+	echo "        Edit the list path in the UI, or set PENTEST_TUI_WORDLISTS." >&2
+fi
 
 exec ./web "$@"

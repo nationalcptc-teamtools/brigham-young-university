@@ -3,8 +3,11 @@
 #
 # Layout:
 #   /opt/pentest-tui/web        the real binary (prebuilt amd64, or rebuilt below)
-#   /opt/pentest-tui/wordlists  bundled wordlists, found next to the binary
 #   /usr/local/bin/web          global launcher (on everyone's PATH)
+#
+# Wordlists are NOT bundled: the app resolves them from Kali's own
+# /usr/share/wordlists at runtime (dirb, dirbuster, seclists). Nothing to copy
+# or install here.
 #
 # Run from inside the app directory on the target box:
 #   sudo ./install.sh            # use the prebuilt ./web binary
@@ -40,13 +43,6 @@ fi
 echo "==> installing app into $APP_DIR"
 install -d -m 0755 "$APP_DIR"
 install -m 0755 "$SRC/web" "$APP_DIR/web"
-rm -rf "$APP_DIR/wordlists"
-cp -a "$SRC/wordlists" "$APP_DIR/wordlists"
-# The bundled wordlists are redistributed from SecLists (MIT); see
-# wordlists/ATTRIBUTION.md. If you would rather NOT redistribute them, delete the
-# cp above and fetch SecLists at install time instead, e.g.:
-#   git clone --depth 1 https://github.com/danielmiessler/SecLists "$APP_DIR/wordlists"
-# The app resolves wordlists by path at runtime, so either approach works.
 # World-readable files, traversable dirs; nothing group/other-writable.
 chmod -R a+rX "$APP_DIR"
 chmod 0755 "$APP_DIR/web"

@@ -232,23 +232,22 @@ A typical chain: `subfinder` → `httpx` → `katana`/`gau` → `ffuf`/`arjun` �
 
 ## Wordlists
 
-A curated slice of [SecLists](https://github.com/danielmiessler/SecLists) ships
-in `wordlists/` so the fuzzing tools run out of the box — no system install
-needed:
+Nothing ships with this app and nothing is installed. The fuzzing tools default
+to the wordlists Kali already provides under `/usr/share/wordlists`, so
+`ffuf`, `gobuster`, and `kerbrute` resolve to real files out of the box on a
+default install:
 
-| Dir | Lists | Used by |
-|-----|-------|---------|
-| `web-content/` | `common.txt`, `raft-medium-directories.txt`, `raft-medium-files.txt`, `big.txt`, `quickhits.txt`, `DirBuster-2007_directory-list-2.3-medium.txt`, `raft-large-directories.txt`, `raft-large-files.txt` | `ffuf`, `gobuster` |
-| `dns/` | `subdomains-top1million-{5000,20000,110000}.txt`, `bitquark-subdomains-top100000.txt` | subdomain brute / vhost fuzzing |
-| `usernames/` | `top-usernames-shortlist.txt`, `cirt-default-usernames.txt` | auth fuzzing |
-| `passwords/` | `darkweb2017_top-1000.txt`, `probable-v2_top-{1575,12000}.txt`, `Pwdb_top-100000.txt`, `top-passwords-shortlist.txt` | auth fuzzing |
+| Path (under `/usr/share/wordlists`) | Used by |
+|-------------------------------------|---------|
+| `dirbuster/directory-list-2.3-medium.txt` | `ffuf` |
+| `dirb/common.txt` | `gobuster` |
+| `seclists/Discovery/DNS/subdomains-top1million-110000.txt` | subdomain brute / vhost fuzzing |
+| `seclists/Usernames/top-usernames-shortlist.txt` | `kerbrute` user enum / spray |
 
-`ffuf` and `gobuster` default their `-w` flag to a bundled list (editable in the
-UI). Paths resolve to an absolute location next to the binary, so a command
-copied or run from the TUI works from any directory. To use a different
-collection, set `PENTEST_TUI_WORDLISTS` to a directory that mirrors the same
-`web-content/`, `dns/`, … sub-layout, and the defaults follow it; otherwise just
-edit the `-w` path in the UI.
+Defaults resolve to an absolute path, so a command copied or run from the TUI
+works from any directory. Every list is editable in the UI — just change the
+`-w` path to any other wordlist on the box. To use a different root, set
+`PENTEST_TUI_WORDLISTS` and the relative defaults follow it.
 
 ## Payloads
 
@@ -429,7 +428,7 @@ command.
 | `model.go` | Bubble Tea model, update loop, and three-panel rendering |
 | `project.go` | project/scope picker: state, persistence, and scope wiring |
 | `run.go` | streams a running command's output into the right panel |
-| `wordlists.go` | resolves the bundled SecLists paths |
+| `wordlists.go` | resolves Kali `/usr/share/wordlists` paths |
 | `web.go` | `--web` server: serves the catalog, runs commands, manages projects, enforces scope |
 | `terminal.go` / `ws.go` / `pty_linux.go` / `pty_other.go` | the split-screen browser terminals and their PTY backing |
 | `license.go` | licensing / entitlement checks (local mode unlocks everything) |

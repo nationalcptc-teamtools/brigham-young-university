@@ -70,7 +70,7 @@ var footprintingCatalog = []Tool{
 		Flags: []Flag{
 			fpNS(), fpDomain(),
 			{Flag: "{WORDLIST}", Name: "Wordlist", Kind: KindString, Required: true,
-				Placeholder: "/usr/share/seclists/Discovery/DNS/subdomains-top1million-110000.txt",
+				Placeholder: "/usr/share/wordlists/seclists/Discovery/DNS/subdomains-top1million-110000.txt",
 				Desc:        "Subdomain wordlist to feed dnsenum"},
 		},
 	},
