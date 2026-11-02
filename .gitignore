@@ -1,0 +1,7 @@
+# External material pulled from other teams' public CPTC repos for study/reference.
+# Kept locally for prep, but not ours to republish under our own repo.
+/reference/
+/wordlists/
+
+# Local-only scratch material, not part of the shared repo.
+/scripts/
