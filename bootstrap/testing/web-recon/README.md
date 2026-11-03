@@ -18,6 +18,4 @@ python3 web_recon.py -u http://10.10.10.15/ --gentle
 
 `--gentle` drops concurrency/rate for fragile single-container targets that SIGSEGV under default load. `--no-nuclei` skips the nuclei scan phase.
 
-`parse_ffuf.py <path_to_ffuf.json>` pretty-prints a saved ffuf results file sorted by status/size.
-
 Run `python3 web_recon.py -h` for the full flag list.
