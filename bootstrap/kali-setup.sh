@@ -38,6 +38,9 @@ TOOLS_DIR="$HOME/tools"
 WIN_DIR="$TOOLS_DIR/windows"
 mkdir -p "$TOOLS_DIR" "$WIN_DIR"
 
+mkdir -p "$HOME/.cache/pip"
+chown -R root:root "$HOME/.cache"
+
 echo "===> [1/7] Base packages"
 run apt -y update
 run apt -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
