@@ -2,6 +2,10 @@
 
 set +e
 
+export DEBIAN_FRONTEND=noninteractive
+export NEEDRESTART_MODE=a
+export NEEDRESTART_SUSPEND=1
+
 FAILURES=()
 run() {
   echo "+ $*"
@@ -36,7 +40,8 @@ mkdir -p "$TOOLS_DIR" "$WIN_DIR"
 
 echo "===> [1/7] Base packages"
 run apt -y update
-run apt -y install git curl wget jq pipx kitty \
+run apt -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
+    install git curl wget jq pipx kitty \
     nmap seclists enum4linux-ng enum4linux smbmap smbclient ldap-utils \
     netexec ffuf gobuster feroxbuster sqlmap proxychains4 xclip \
     certipy-ad coercer evil-winrm sharphound bloodhound-ce-python bloodyad \
