@@ -5,3 +5,6 @@
 
 # Local-only scratch material, not part of the shared repo.
 /scripts/
+
+__pycache__/
+*.pyc
