@@ -17,6 +17,7 @@ Pipeline (spider-first: enumerate everything easy, probe it, THEN brute force):
   Phase 2:   probe spidered/quick-check findings for vulns FIRST
              (dir-traversal triage + LFI/SQLi/CMDi on on-page params)
   Phase 3:   ffuf directory/file brute force (fast wordlist) → new endpoints
+  Phase 3.7: nuclei template scan (CVEs/exposures/misconfigs) on all endpoints
   Phase 4:   arjun parameter discovery on brute-forced endpoints
   Phase 5:   ffuf vulnerability probing on arjun params
   Phase 6:   report → curl/ffuf/Burp + per-dir recursive & vhost commands
@@ -42,9 +43,7 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse
 
-# =============================================================================
 # Constants & Configuration
-# =============================================================================
 
 # ANSI color codes
 RED = "\033[91m"
@@ -60,8 +59,8 @@ RESET = "\033[0m"
 # can't stall an unattended run (arjun is ~30-60s per endpoint).
 MAX_ARJUN_ENDPOINTS = 25
 
-# arjun per-endpoint timeout. 5 min was too slow for exam pace; 90s finishes
-# any responsive endpoint and caps the worst-case multi-endpoint run.
+# arjun per-endpoint timeout. 5 min is too slow; 90s finishes any
+# responsive endpoint and caps the worst-case multi-endpoint run.
 ARJUN_TIMEOUT = 90
 
 # HTML form field harvesting (Phase 1.5): cap on endpoints fetched, and
@@ -96,7 +95,6 @@ API_BASES = ("api", "rest", "graphql", "v1", "v2")
 API_FUZZ_THREADS = 8
 
 # Static file extensions to filter before parameter discovery
-# Source: reconFTW modules/web.sh line 1341
 STATIC_EXTENSIONS = {
     ".eot", ".jpg", ".jpeg", ".gif", ".css", ".tif", ".tiff",
     ".png", ".ttf", ".otf", ".woff", ".woff2", ".ico", ".pdf", ".svg",
@@ -196,7 +194,7 @@ PROBE_CONFIG = {
     },
 }
 
-# arjun output parsing patterns (adapted from reconFTW web.sh lines 1272-1285)
+# arjun output parsing patterns
 RE_URL = re.compile(r"https?://\S+")
 RE_PARAMS_FOUND = re.compile(r"Parameters found:\s*(.*)", re.IGNORECASE)
 RE_INLINE_PARAM = re.compile(r"[?&]([A-Za-z0-9_.-]+)=")
@@ -235,9 +233,7 @@ TOP_20_LFI_PAYLOADS = [
 ]
 
 
-# =============================================================================
 # Utility Functions
-# =============================================================================
 
 LOG_LOCK = threading.Lock()
 
@@ -446,7 +442,6 @@ def find_wordlist(key):
     path = WORDLISTS.get(key, "")
     if path and os.path.isfile(path):
         return path
-    # Fallback for directory wordlists
     if key == "dir_primary":
         fallback = WORDLISTS.get("dir_fallback", "")
         if fallback and os.path.isfile(fallback):
@@ -460,9 +455,7 @@ def url_sep(url):
     return "&" if "?" in url else "?"
 
 
-# =============================================================================
 # Phase 0: Technology Detection (whatweb)
-# =============================================================================
 
 def run_whatweb(url, verbose=False):
     """Run whatweb -a1 against a URL and return raw output."""
@@ -502,9 +495,7 @@ def detect_tech_preset(whatweb_result):
     return "all"
 
 
-# =============================================================================
 # Phase 1: Site Spidering (katana)
-# =============================================================================
 
 def parse_katana_output(stdout, url):
     """
@@ -622,9 +613,7 @@ def robots_disallow_urls(base_url, verbose=False):
     return urls
 
 
-# =============================================================================
 # Phase 1.5: HTML Form Field Harvesting
-# =============================================================================
 
 def parse_form_fields(html):
     """
@@ -671,9 +660,7 @@ def harvest_form_params(endpoints, verbose=False):
     return params_by_url
 
 
-# =============================================================================
 # Phase 3: Directory Discovery (ffuf)
-# =============================================================================
 
 def build_ffuf_cmd(url, extensions, wordlist, output_file,
                    recursive=False, extra_flags=None, filter_size=None,
@@ -707,7 +694,7 @@ def build_ffuf_cmd(url, extensions, wordlist, output_file,
         cmd += ["-e", extensions]
 
     # Recursion is ON by default (depth 2): each discovered directory gets one
-    # deeper pass so nested unlinked paths (exam favorites) aren't missed.
+    # deeper pass so nested unlinked paths aren't missed.
     # Disable with --no-recursive when time/requests are tight.
     if recursive:
         cmd += ["-recursion", "-recursion-depth", "2"]
@@ -718,9 +705,7 @@ def build_ffuf_cmd(url, extensions, wordlist, output_file,
     return cmd
 
 
-# =============================================================================
 # Phase 0.5: Quick-Win Pre-Checks
-# =============================================================================
 
 # High-value paths to probe before the long ffuf scan.
 # On Juice Shop, /api-docs alone gives the full API route map.
@@ -804,7 +789,6 @@ def run_quick_checks(base_url, verbose=False):
             log_info(f"  {path:<30} {status} (catch-all — skipped)")
             continue
 
-        # Color-code by status
         if status in (401, 403):
             sc = f"{RED}{BOLD}{status}{RESET}"
             tag = f" {RED}← AUTH PROTECTED — high priority{RESET}"
@@ -907,6 +891,73 @@ def run_api_fuzz(api_base, output_dir, verbose=False, timeout=600,
     return hits
 
 
+def parse_nuclei_output(jsonl_path):
+    """Parse nuclei's JSONL export into a flat list of finding dicts."""
+    findings = []
+    if not os.path.isfile(jsonl_path):
+        return findings
+    with open(jsonl_path) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            info = row.get("info", {})
+            findings.append({
+                "template_id": row.get("template-id", "?"),
+                "name": info.get("name", "?"),
+                "severity": info.get("severity", "unknown"),
+                "url": row.get("matched-at") or row.get("host", "?"),
+            })
+    return findings
+
+
+def run_nuclei(targets, output_dir, safe_name, verbose=False, gentle=False,
+               timeout=900):
+    """
+    Run nuclei's community templates (CVEs, exposures, misconfigs, default
+    creds, takeovers, ...) against the base target and every discovered
+    endpoint. Still discovery only — nuclei reports matches, it never acts
+    on them. -duc skips the template-update check so a disconnected
+    (competition-network) run doesn't stall trying to reach the internet.
+    """
+    if not targets:
+        return []
+
+    out_file = os.path.join(output_dir, f"{safe_name}_nuclei.jsonl")
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".txt", delete=False, prefix="nuclei_targets_"
+    ) as f:
+        f.write("\n".join(targets))
+        target_file = f.name
+
+    cmd = [
+        "nuclei", "-l", target_file, "-silent", "-duc",
+        "-severity", "low,medium,high,critical",
+        "-jsonl-export", out_file,
+    ]
+    if gentle:
+        cmd += ["-rl", str(GENTLE_PROBE_RATE)]
+
+    log_info(f"Running nuclei against {len(targets)} target(s)...")
+    run_subprocess_live(cmd, timeout=timeout, verbose=verbose)
+
+    try:
+        os.unlink(target_file)
+    except OSError:
+        pass
+
+    findings = parse_nuclei_output(out_file)
+    for finding in findings:
+        sev = finding["severity"]
+        msg = f"[{sev.upper()}] {finding['name']} — {finding['url']}"
+        log_vuln(msg) if sev in ("high", "critical") else log_warn(msg)
+    return findings
+
+
 def run_ffuf_dirscan(url, preset, output_dir, wordlist_override=None,
                      extra_flags=None, recursive=False,
                      quick_mode=False, verbose=False, timeout=1800,
@@ -923,7 +974,6 @@ def run_ffuf_dirscan(url, preset, output_dir, wordlist_override=None,
             extensions = "php,txt,bak"
         recursive = False
 
-    # Resolve wordlist
     if wordlist_override and os.path.isfile(wordlist_override):
         wordlist = wordlist_override
     else:
@@ -980,9 +1030,7 @@ def run_ffuf_dirscan(url, preset, output_dir, wordlist_override=None,
     return None
 
 
-# =============================================================================
 # Phase 2: Static Asset Filtering
-# =============================================================================
 
 def parse_ffuf_json(json_path):
     """Parse ffuf JSON output and return the results list."""
@@ -1072,9 +1120,7 @@ def extract_dynamic_endpoints(results):
     return endpoints
 
 
-# =============================================================================
 # Phase 3: Parameter Discovery (arjun)
-# =============================================================================
 
 def run_arjun(endpoint, verbose=False):
     """Run arjun against a single endpoint and return discovered params."""
@@ -1085,8 +1131,6 @@ def run_arjun(endpoint, verbose=False):
     ) as f:
         output_file = f.name
 
-    # arjun invocation mirrors reconFTW: arjun -i <input> -oT <output>
-    # For single URL we use -u instead of -i.
     # -m GET,POST: test both HTTP methods so JSON POST body params
     # (e.g. email/password on /rest/user/login) are discovered.
     cmd = ["arjun", "-u", endpoint, "-m", "GET,POST", "-oT", output_file]
@@ -1094,7 +1138,6 @@ def run_arjun(endpoint, verbose=False):
 
     params = parse_arjun_output(output_file, stdout)
 
-    # Cleanup temp file
     try:
         os.unlink(output_file)
     except OSError:
@@ -1104,17 +1147,9 @@ def run_arjun(endpoint, verbose=False):
 
 
 def parse_arjun_output(text_file, stdout_text=""):
-    """
-    Parse arjun plaintext output to extract discovered parameters.
-
-    Adapted from reconFTW modules/web.sh lines 1272-1285:
-      grep -aEo 'https?://[^ ]+'              → extract URLs
-      grep -aE 'Parameters found:' | tr ','    → extract param lists
-      grep -aEo '([?&][A-Za-z0-9_.-]+)='      → extract inline params
-    """
+    """Parse arjun plaintext output to extract discovered parameters."""
     params = {}
 
-    # Combine file content and stdout
     content = stdout_text or ""
     try:
         if os.path.isfile(text_file) and os.path.getsize(text_file) > 0:
@@ -1133,7 +1168,6 @@ def parse_arjun_output(text_file, stdout_text=""):
         if not line:
             continue
 
-        # Extract URL from line
         url_match = RE_URL.search(line)
         if url_match:
             found_url = url_match.group(0)
@@ -1142,11 +1176,9 @@ def parse_arjun_output(text_file, stdout_text=""):
             if current_url not in params:
                 params[current_url] = set()
 
-            # Extract inline params (e.g., ?id=1&file=test)
             for pm in RE_INLINE_PARAM.finditer(found_url):
                 params[current_url].add(pm.group(1))
 
-        # Extract from "Parameters found: param1, param2" lines
         pf_match = RE_PARAMS_FOUND.search(line)
         if pf_match and current_url:
             for p in pf_match.group(1).split(","):
@@ -1181,9 +1213,7 @@ def discover_params(endpoints, verbose=False):
     return all_params
 
 
-# =============================================================================
 # Phase 4.5: Vulnerability Probing (raw response logging)
-# =============================================================================
 
 
 def _advisory_match(payload_str, status, body_snippet, regex_pattern):
@@ -1295,7 +1325,6 @@ def run_ffuf_probe(url, param, probe_type, probe_file=None, verbose=False,
     tmp_dir = tempfile.mkdtemp(prefix=f"probe_{probe_type}_")
     tmp_json = os.path.join(tmp_dir, "out.json")
 
-    # ── ffuf command ────────────────────────────────────────────────────
     cmd = [
         "ffuf",
         "-u",    probe_url,
@@ -1329,7 +1358,6 @@ def run_ffuf_probe(url, param, probe_type, probe_file=None, verbose=False,
 
     run_subprocess(cmd, timeout=120, verbose=False)
 
-    # ── Parse ALL results ───────────────────────────────────────────────
     all_results    = []
     advisory_hits  = []
 
@@ -1358,13 +1386,12 @@ def run_ffuf_probe(url, param, probe_type, probe_file=None, verbose=False,
     except (json.JSONDecodeError, FileNotFoundError):
         pass
 
-    # Cleanup temp directory
     try:
         shutil.rmtree(tmp_dir)
     except OSError:
         pass
 
-    # ── Advisory regex check (highlight only, not filter) ───────────────
+    # Advisory regex check (highlight only, not filter)
     advisory_regex = config.get("match_regex", "")
     for row in all_results:
         if advisory_regex and _advisory_match(
@@ -1375,9 +1402,7 @@ def run_ffuf_probe(url, param, probe_type, probe_file=None, verbose=False,
         else:
             row["advisory"] = False
 
-    # ── Terminal output ─────────────────────────────────────────────────
     if all_results:
-        # Column header
         print(
             f"\n  {BOLD}{'STATUS':<8} {'SIZE':<8} {'WORDS':<7} {'LINES':<7} PAYLOAD{RESET}"
         )
@@ -1404,7 +1429,6 @@ def run_ffuf_probe(url, param, probe_type, probe_file=None, verbose=False,
     else:
         log_info(f"  No non-baseline responses (all filtered by auto-calibrate)")
 
-    # ── Write to probe results file ─────────────────────────────────────
     if probe_file:
         _write_probe_header(
             probe_file, url, probe_type, param, wordlist, probe_url
@@ -1452,7 +1476,6 @@ def probe_all_params(params_by_url, probe_file, verbose=False,
     total_params = sum(len(p) for p in params_by_url.values())
     count        = 0
 
-    # Write file header once
     with open(probe_file, "w") as f:
         f.write(
             "=" * 80 + "\n"
@@ -1568,9 +1591,7 @@ def probe_dir_traversal(endpoints, probe_file, verbose=False, threads=10):
     return hits
 
 
-# =============================================================================
 # Phase 4: Report Generation
-# =============================================================================
 
 def generate_curl_probes(url, param):
     """Generate curl probe commands for a single parameter (GET and POST)."""
@@ -1766,7 +1787,6 @@ def write_recon_summary(target_url, scan_results, output_path):
     lines = []
     has_vulns = False
 
-    # ── Header ──────────────────────────────────────────────────────────
     lines.append(f"# Recon Summary: {target_url}")
     lines.append("")
     lines.append(f"**Scan Date:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
@@ -1778,7 +1798,7 @@ def write_recon_summary(target_url, scan_results, output_path):
     lines.append("---")
     lines.append("")
 
-    # ── Phase 0.5: Quick-Win Pre-Checks ─────────────────────────────────
+    # Phase 0.5: Quick-Win Pre-Checks
     quick_hits = scan_results.get("quick_hits", [])
     if quick_hits:
         lines.append("## Phase 0.5: Quick-Win Pre-Checks")
@@ -1794,7 +1814,7 @@ def write_recon_summary(target_url, scan_results, output_path):
         lines.append("---")
         lines.append("")
 
-    # ── Phase 1: Spidered Endpoints & On-Page Parameters ────────────────
+    # Phase 1: Spidered Endpoints & On-Page Parameters
     spider_endpoints = scan_results.get("spider_endpoints", [])
     spider_params = scan_results.get("spider_params_by_url", {})
     if spider_endpoints or spider_params:
@@ -1816,7 +1836,7 @@ def write_recon_summary(target_url, scan_results, output_path):
         lines.append("---")
         lines.append("")
 
-    # ── Phase 3: Directory Brute Force ──────────────────────────────────
+    # Phase 3: Directory Brute Force
     lines.append("## Phase 3: Directory Brute Force (ffuf)")
     lines.append("")
 
@@ -1865,7 +1885,7 @@ def write_recon_summary(target_url, scan_results, output_path):
     lines.append("---")
     lines.append("")
 
-    # ── Phase 3.6: API Route Discovery ──────────────────────────────────
+    # Phase 3.6: API Route Discovery
     api_endpoints = scan_results.get("api_endpoints", [])
     if api_endpoints:
         lines.append("## Phase 3.6: API Route Discovery")
@@ -1885,13 +1905,34 @@ def write_recon_summary(target_url, scan_results, output_path):
         lines.append("---")
         lines.append("")
 
-    # ── Phase 2.5: FTP Auto-Listing ─────────────────────────────────────
+    # Phase 3.7: Vulnerability Scanning (nuclei)
+    nuclei_findings = scan_results.get("nuclei_findings", [])
+    if nuclei_findings:
+        if any(f["severity"] in ("high", "critical") for f in nuclei_findings):
+            has_vulns = True
+        lines.append("## Phase 3.7: Vulnerability Scanning (nuclei)")
+        lines.append("")
+        lines.append("| Severity | Template | URL |")
+        lines.append("|----------|----------|-----|")
+        severity_order = {"critical": 0, "high": 1, "medium": 2, "low": 3,
+                          "unknown": 4}
+        for finding in sorted(
+            nuclei_findings, key=lambda f: severity_order.get(f["severity"], 4)
+        ):
+            lines.append(
+                f"| {finding['severity'].upper()} | {finding['name']} "
+                f"({finding['template_id']}) | {finding['url']} |"
+            )
+        lines.append("")
+        lines.append("---")
+        lines.append("")
+
+    # Phase 2.5: FTP Auto-Listing
     ftp_data = scan_results.get("ftp_listing")
     if ftp_data:
         lines.append(f"## Phase 2.5: FTP Auto-Listing ({ftp_data['url']})")
         lines.append("")
         lines.append("```html")
-        # Keep snippet manageable
         lines.append(ftp_data['content'][:1000].strip())
         if len(ftp_data['content']) > 1000:
             lines.append("\n... (truncated)")
@@ -1900,7 +1941,7 @@ def write_recon_summary(target_url, scan_results, output_path):
         lines.append("---")
         lines.append("")
 
-    # ── Phase 3.5: Directory Traversal Quick Triage ──────────────────────
+    # Phase 3.5: Directory Traversal Quick Triage
     dir_lfi_hits = scan_results.get("dir_lfi_hits", [])
     if dir_lfi_hits:
         has_vulns = True
@@ -1916,7 +1957,7 @@ def write_recon_summary(target_url, scan_results, output_path):
         lines.append("---")
         lines.append("")
 
-    # ── Phase 3: Parameter Discovery ────────────────────────────────────
+    # Phase 3: Parameter Discovery
     params_by_url = scan_results.get("params_by_url", {})
     lines.append("## Phase 4: Parameter Discovery (arjun)")
     lines.append("")
@@ -1938,7 +1979,7 @@ def write_recon_summary(target_url, scan_results, output_path):
     lines.append("---")
     lines.append("")
 
-    # ── On-Page Parameter Indicators (spidered params, probed separately) ─
+    # On-Page Parameter Indicators (spidered params, probed separately)
     spider_probe_results = scan_results.get("spider_probe_results", {})
     if spider_probe_results:
         spider_lines, spider_found = _probe_indicator_lines(
@@ -1950,7 +1991,7 @@ def write_recon_summary(target_url, scan_results, output_path):
         lines.extend(spider_lines)
         has_vulns = has_vulns or spider_found
 
-    # ── Phase 4.5: Vulnerability Indicators (arjun-discovered params) ────
+    # Phase 4.5: Vulnerability Indicators (arjun-discovered params)
     probe_results = scan_results.get("probe_results", {})
     if probe_results:
         arjun_lines, arjun_found = _probe_indicator_lines(
@@ -1962,7 +2003,7 @@ def write_recon_summary(target_url, scan_results, output_path):
         lines.extend(arjun_lines)
         has_vulns = has_vulns or arjun_found
 
-    # ── Phase 4: Manual Verification Commands ───────────────────────────
+    # Phase 4: Manual Verification Commands
     lines.append("## Phase 4: Manual Verification Commands")
     lines.append("")
 
@@ -1970,7 +2011,6 @@ def write_recon_summary(target_url, scan_results, output_path):
         for p_url, p_list in params_by_url.items():
             parsed_path = urlparse(p_url).path or "/"
             for param in p_list:
-                # Check for vulnerability tag
                 vuln_tag = ""
                 diff_tag = ""
                 if probe_results.get(p_url, {}).get(param):
@@ -1990,7 +2030,6 @@ def write_recon_summary(target_url, scan_results, output_path):
                 )
                 lines.append("")
 
-                # curl commands
                 lines.append("#### curl probe commands")
                 lines.append("```bash")
                 for cmd_line in generate_curl_probes(p_url, param):
@@ -1998,7 +2037,6 @@ def write_recon_summary(target_url, scan_results, output_path):
                 lines.append("```")
                 lines.append("")
 
-                # ffuf commands with SecLists wordlists
                 lines.append(
                     "#### ffuf probe commands (with SecLists wordlists)"
                 )
@@ -2008,7 +2046,6 @@ def write_recon_summary(target_url, scan_results, output_path):
                 lines.append("```")
                 lines.append("")
 
-                # Burp Repeater request
                 lines.append("#### Burp Repeater Request")
                 lines.append("```http")
                 lines.append(generate_burp_request(p_url, param))
@@ -2020,7 +2057,7 @@ def write_recon_summary(target_url, scan_results, output_path):
             "no verification commands to generate.*"
         )
 
-    # ── Additional Manual Fuzzing: per-directory recursion + vhost ──────
+    # Additional Manual Fuzzing: per-directory recursion + vhost
     all_dirs = scan_results.get("all_dirs", [])
     lines.append("")
     lines.append("---")
@@ -2103,12 +2140,19 @@ def print_cli_summary(target_url, scan_results):
     if probe_file and os.path.isfile(probe_file):
         print(f"\n  {GREEN}Probe results file:{RESET} {probe_file}")
 
+    nuclei_findings = scan_results.get("nuclei_findings", [])
+    if nuclei_findings:
+        print(f"  {YELLOW}nuclei findings:{RESET}         {len(nuclei_findings)}")
+        for finding in nuclei_findings:
+            print(f"    {YELLOW}⚠  [{finding['severity'].upper()}] "
+                  f"{finding['name']} → {finding['url']}{RESET}")
+    else:
+        print(f"  {CYAN}nuclei findings:{RESET}         0")
+
     print()
 
 
-# =============================================================================
 # Pipeline Orchestration
-# =============================================================================
 
 def scan_target(url, args):
     """
@@ -2120,6 +2164,7 @@ def scan_target(url, args):
       1.   katana spider (+ robots.txt) → endpoints & on-page params
       2.   probe spidered findings for vulns (dir-traversal + on-page params)
       3.   ffuf directory brute force → 3.5 static-asset filtering
+      3.7. nuclei template scan on base target + all discovered endpoints
       4.   arjun parameter discovery (spider + brute endpoints)
       5.   ffuf vulnerability probing on arjun params
       6.   report generation
@@ -2140,6 +2185,7 @@ def scan_target(url, args):
         "params_by_url": {},
         "probe_results": {},
         "all_dirs": [],
+        "nuclei_findings": [],
     }
 
     output_dir = args.output_dir or "./recon_output"
@@ -2147,7 +2193,7 @@ def scan_target(url, args):
     verbose = args.verbose
     safe_name = sanitize_filename(url)
 
-    # ── Phase 0: Tech Detection ─────────────────────────────────────────
+    # Phase 0: Tech Detection
     preset = args.tech
     if not preset:
         log_phase("Phase 0: Technology Detection (whatweb)")
@@ -2170,7 +2216,7 @@ def scan_target(url, args):
 
     scan_results["preset"] = preset
 
-    # ── Phase 0.5: Quick-Win Pre-Checks ────────────────────────────────
+    # Phase 0.5: Quick-Win Pre-Checks
     quick_hits = []
     if not args.skip_quick_checks:
         log_phase("Phase 0.5: Quick-Win Pre-Checks")
@@ -2194,7 +2240,7 @@ def scan_target(url, args):
     else:
         log_info("Quick-win pre-checks skipped (--skip-quick-checks)")
 
-    # ── Phase 1: Site Spidering (katana) + robots.txt ──────────────────
+    # Phase 1: Site Spidering (katana) + robots.txt
     spider_endpoints, spider_params = [], {}
     if not args.skip_spider:
         log_phase("Phase 1: Site Spidering (katana)")
@@ -2234,7 +2280,7 @@ def scan_target(url, args):
     else:
         log_info("Spidering skipped (--skip-spider)")
 
-    # ── Phase 2: Probe everything discovered so far (BEFORE brute force) ─
+    # Phase 2: Probe everything discovered so far (BEFORE brute force)
     # Combine spidered endpoints + quick-check hits — these are the "easy"
     # findings; triage them for vulns first so quick wins surface early.
     discovered_dirs = filter_static_urls(list(dict.fromkeys(
@@ -2283,7 +2329,7 @@ def scan_target(url, args):
     elif args.no_probe:
         log_info("Vulnerability probing disabled (--no-probe)")
 
-    # ── Phase 3: Directory Brute Force (ffuf) ───────────────────────────
+    # Phase 3: Directory Brute Force (ffuf)
     ffuf_json_path = None
     expected_json = os.path.join(output_dir, f"{safe_name}_ffuf.json")
 
@@ -2316,7 +2362,7 @@ def scan_target(url, args):
             default=None,
         )
 
-    # ── Phase 3.5: Static Asset Filtering ───────────────────────────────
+    # Phase 3.5: Static Asset Filtering
     if ffuf_json_path:
         log_phase("Phase 3.5: Static Asset Filtering")
         all_results = parse_ffuf_json(ffuf_json_path)
@@ -2339,7 +2385,7 @@ def scan_target(url, args):
         else:
             log_warn("No dynamic endpoints found after filtering")
 
-        # ── 401/403 callout — auth-protected endpoints ──────────────
+        # 401/403 callout — auth-protected endpoints
         auth_protected = [
             r for r in all_results if r.get("status") in (401, 403)
         ]
@@ -2356,7 +2402,7 @@ def scan_target(url, args):
                 )
             scan_results["auth_protected"] = auth_protected
 
-    # ── Phase 3.6: API Route Fuzzing (only if an API base was discovered) ─
+    # Phase 3.6: API Route Fuzzing (only if an API base was discovered)
     # Use RAW ffuf results (not the 500-filtered dynamic set): API bases like
     # /api and /rest answer with 500 on a bare GET, so they'd otherwise be lost.
     dynamic_endpoints = scan_results.get("dynamic_endpoints", [])
@@ -2389,7 +2435,26 @@ def scan_target(url, args):
     )))
     scan_results["all_dirs"] = all_dirs
 
-    # ── FTP directory auto-listing (from robots/spider or brute) ────────
+    # Phase 3.7: Vulnerability Scanning (nuclei)
+    if not args.no_nuclei:
+        if not check_tool("nuclei"):
+            log_warn("nuclei not found — skipping Phase 3.7 (apt install nuclei)")
+        elif check_alive_or_warn(url, "nuclei", verbose):
+            log_phase("Phase 3.7: Vulnerability Scanning (nuclei)")
+            nuclei_targets = list(dict.fromkeys([url] + all_dirs))
+            nuclei_findings = run_phase(
+                "nuclei",
+                lambda: run_nuclei(nuclei_targets, output_dir, safe_name,
+                                    verbose=verbose, gentle=args.gentle),
+                default=[],
+            )
+            scan_results["nuclei_findings"] = nuclei_findings
+            if nuclei_findings:
+                log_success(f"nuclei found {len(nuclei_findings)} finding(s)")
+            else:
+                log_info("nuclei found no matches")
+
+    # FTP directory auto-listing (from robots/spider or brute)
     for ep in all_dirs:
         if urlparse(ep).path.rstrip("/").lower().endswith("/ftp"):
             print()
@@ -2404,7 +2469,7 @@ def scan_target(url, args):
                 print(f"  {CYAN}{out[:500].strip()}...{RESET}")
             break
 
-    # ── Phase 4: Parameter Discovery (arjun) ────────────────────────────
+    # Phase 4: Parameter Discovery (arjun)
     # Runs on spider-discovered AND brute-forced endpoints. On SPAs the brute
     # force finds nothing (catch-all 200s), so the spidered /rest & /api routes
     # are where params actually live. Capped so a large crawl can't stall.
@@ -2432,7 +2497,7 @@ def scan_target(url, args):
     else:
         log_info("No endpoints to scan for parameters")
 
-    # ── Form harvest pass #2: brute-forced endpoints (e.g. /admin/login) ──
+    # Form harvest pass #2: brute-forced endpoints (e.g. /admin/login)
     # arjun can't see POST form fields, so harvest them from every endpoint
     # that Phase 3/3.6 added and feed them into Phase 5 probing below.
     extra_form_params = {}
@@ -2450,7 +2515,7 @@ def scan_target(url, args):
                 default={},
             )
 
-    # ── Phase 5: Vulnerability Probing on arjun params ──────────────────
+    # Phase 5: Vulnerability Probing on arjun params
     params_by_url = scan_results.get("params_by_url", {})
     for f_url, fields in extra_form_params.items():
         params_by_url[f_url] = sorted(
@@ -2482,7 +2547,7 @@ def scan_target(url, args):
         )
         scan_results["probe_file"] = probe_file
 
-    # ── Phase 6: Report Generation ──────────────────────────────────────
+    # Phase 6: Report Generation
     log_phase("Phase 6: Report Generation")
 
     report_path = os.path.join(output_dir, f"{safe_name}_recon.md")
@@ -2518,7 +2583,6 @@ examples:
         """,
     )
 
-    # Target input (mutually exclusive)
     target_group = parser.add_mutually_exclusive_group(required=True)
     target_group.add_argument(
         "-u", "--url", help="Single target URL (e.g., http://10.10.10.15/)"
@@ -2528,7 +2592,6 @@ examples:
         help="File with target URLs (one per line)",
     )
 
-    # Options
     parser.add_argument(
         "-o", "--output-dir", default="./recon_output",
         help="Output directory for raw tool output (default: ./recon_output)",
@@ -2632,13 +2695,17 @@ examples:
         help="Disable Phase 3.6 API route fuzzing (/api/FUZZ, /rest/FUZZ)",
     )
     parser.add_argument(
+        "--no-nuclei", action="store_true",
+        help="Disable Phase 3.7 nuclei template scan (CVEs/exposures/misconfigs)",
+    )
+    parser.add_argument(
         "-v", "--verbose", action="store_true",
         help="Extra verbose output (show full subprocess commands)",
     )
 
     args = parser.parse_args()
 
-    # ── Banner ──────────────────────────────────────────────────────────
+    # Banner
     print(f"""{CYAN}{BOLD}
 ██╗    ██╗███████╗██████╗     ██████╗ ███████╗ ██████╗ ██████╗ ███╗   ██╗
 ██║    ██║██╔════╝██╔══██╗    ██╔══██╗██╔════╝██╔════╝██╔═══██╗████╗  ██║
@@ -2651,7 +2718,7 @@ examples:
 {CYAN}  Discovery only. No automated exploitation.{RESET}
 """)
 
-    # ── Dependency Checks ───────────────────────────────────────────────
+    # Dependency Checks
     log_phase("Dependency Check")
 
     tools = {
@@ -2660,6 +2727,7 @@ examples:
         "arjun":   {"required": True, "install": "pip3 install arjun"},
         "katana":  {"required": True, "install": "apt install katana"},
         "curl":    {"required": True, "install": "apt install curl"},
+        "nuclei":  {"required": False, "install": "apt install nuclei"},
     }
 
     all_ok = True
@@ -2707,7 +2775,7 @@ examples:
 
     print()
 
-    # ── Collect Targets ─────────────────────────────────────────────────
+    # Collect Targets
     targets = []
     if args.url:
         targets.append(args.url)
@@ -2734,7 +2802,7 @@ examples:
 
     log_info(f"Loaded {len(targets)} unique target(s)")
 
-    # ── Execute Scans ───────────────────────────────────────────────────
+    # Execute Scans
     if len(targets) == 1:
         scan_target(targets[0], args)
     else:

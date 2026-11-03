@@ -46,11 +46,13 @@ run apt -y update
 run apt -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
     install git curl wget jq pipx kitty \
     nmap seclists enum4linux-ng enum4linux smbmap smbclient ldap-utils \
-    netexec ffuf gobuster feroxbuster sqlmap proxychains4 xclip katana arjun \
+    netexec ffuf gobuster feroxbuster sqlmap proxychains4 xclip katana arjun nuclei \
     certipy-ad coercer evil-winrm sharphound bloodhound-ce-python bloodyad \
     docker.io docker-compose \
     nbtscan onesixtyone oscanner nikto sslscan sslyze tnscmd10g whatweb \
     dnsrecon impacket-scripts redis-tools snmp sipvicious
+
+run timeout 120 nuclei -ut -duc
 
 run systemctl enable --now docker
 run usermod -aG docker "$TARGET_USER"
