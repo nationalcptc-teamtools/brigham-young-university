@@ -169,9 +169,10 @@ if [ -n "$BHCLI_URL" ]; then
 else
   echo "[!] could not resolve latest bloodhound-cli release"
 fi
+BH_ADMIN_PASS=""
 if command -v bloodhound-cli >/dev/null 2>&1; then
   run bash -c "cd '$BH_DIR' && yes | bloodhound-cli install"
-  echo "    ^ admin credentials are printed above by 'install' — save them now, they aren't shown again."
+  BH_ADMIN_PASS=$(jq -r '.default_admin.password // empty' "$HOME/.config/bloodhound/bloodhound.config.json" 2>/dev/null)
 fi
 echo "    Start later with: (cd $BH_DIR && sudo bloodhound-cli up)   (stop: sudo bloodhound-cli down)"
 echo "    Full reset if something breaks: (cd $BH_DIR && sudo bloodhound-cli down -v && sudo bloodhound-cli up)"
@@ -256,6 +257,12 @@ else
   echo "Everything completed without a reported failure."
 fi
 echo
+if [ -n "$BH_ADMIN_PASS" ]; then
+  echo "BloodHound admin login — user: admin   password: $BH_ADMIN_PASS"
+else
+  echo "[!] could not read BloodHound admin password from ~/.config/bloodhound/bloodhound.config.json"
+fi
+echo
 echo "Next steps:"
 echo "  1. Open a new shell (or 'source ~/.zshrc') to pick up the prompt/colors."
 echo "  2. Open a new kitty window (or ctrl+shift+f5 in an existing one) to pick up the new config."
@@ -266,3 +273,4 @@ echo "  6. Pivoting: 'ligolo-proxy' on this box, copy \$HOME/tools/ligolo/agent(
 echo "  7. AD tool scripts cloned into \$HOME/tools/ (PKINITtools, krbrelayx, pywhisker, noPac, etc.)"
 echo "  8. BloodHound loot: 'bloodyad -H <dc> -d <domain> -u <user> -p <pass> get bloodhound --path ./bh' then upload the zip via File Ingest"
 echo "  9. If apt's netexec/impacket act up: backups at \$HOME/tools/NetExec/.venv/bin/nxc and \$HOME/tools/impacket/.venv/bin/<script>.py"
+echo "  10. Host discovery: sudo nmap -sn <subnet>/24 -oG - | awk '/Up\$/{print \$2}' > targets.txt"
