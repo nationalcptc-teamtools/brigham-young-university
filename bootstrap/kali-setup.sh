@@ -185,7 +185,7 @@ echo "    Start later with: (cd $BH_DIR && sudo bloodhound-cli up)   (stop: sudo
 echo "    Full reset if something breaks: (cd $BH_DIR && sudo bloodhound-cli down -v && sudo bloodhound-cli up)"
 echo "    UI: http://localhost:8080/ui/login"
 
-echo "===> [6/7] Useful Windows binaries -> $WIN_DIR"
+echo "===> [6/8] Useful Windows binaries -> $WIN_DIR"
 SHARP_BASE="https://raw.githubusercontent.com/Flangvik/SharpCollection/master/NetFramework_4.7_Any"
 for exe in Rubeus.exe Certify.exe Seatbelt.exe SharpUp.exe Snaffler.exe; do
   run wget -q "$SHARP_BASE/$exe" -O "$WIN_DIR/$exe"
@@ -200,7 +200,14 @@ run wget -q "https://github.com/peass-ng/PEASS-ng/releases/latest/download/winPE
 run wget -q "https://raw.githubusercontent.com/PowerShellMafia/PowerSploit/master/Recon/PowerView.ps1" -O "$WIN_DIR/PowerView.ps1"
 run wget -q "https://raw.githubusercontent.com/PowerShellMafia/PowerSploit/master/Privesc/PowerUp.ps1" -O "$WIN_DIR/PowerUp.ps1"
 
-echo "===> [7/7] Light-terminal colors (dark palette tuned for a WHITE background)"
+WORDLIST_DIR="$HOME/wordlists"
+mkdir -p "$WORDLIST_DIR"
+echo "===> [7/8] Competition wordlists -> $WORDLIST_DIR"
+UCI_WORDLISTS="https://raw.githubusercontent.com/nationalcptc-teamtools/University-of-California-Irvine/main/wordlists"
+run wget -q "$UCI_WORDLISTS/bff-emails.txt" -O "$WORDLIST_DIR/bff-emails.txt"
+run wget -q "$UCI_WORDLISTS/bff-usernames-all.txt" -O "$WORDLIST_DIR/bff-usernames-all.txt"
+
+echo "===> [8/8] Light-terminal colors (dark palette tuned for a WHITE background)"
 cat > "$HOME/.dircolors-light" << 'EOF'
 RESET 0
 DIR 01;34
@@ -281,3 +288,4 @@ echo "  7. AD tool scripts cloned into \$HOME/tools/ (PKINITtools, krbrelayx, py
 echo "  8. BloodHound loot: 'bloodyad -H <dc> -d <domain> -u <user> -p <pass> get bloodhound --path ./bh' then upload the zip via File Ingest"
 echo "  9. If apt's netexec/impacket act up: backups at \$HOME/tools/NetExec/.venv/bin/nxc and \$HOME/tools/impacket/.venv/bin/<script>.py"
 echo "  10. Host discovery: sudo nmap -sn <subnet>/24 -oG - | awk '/Up\$/{print \$2}' > targets.txt"
+echo "  11. Competition email/username lists: \$HOME/wordlists/bff-emails.txt, bff-usernames-all.txt"
