@@ -44,13 +44,18 @@ chown -R root:root "$HOME/.cache"
 echo "===> [1/7] Base packages"
 run apt -y update
 run apt -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
-    install git curl wget jq pipx kitty \
+    install git curl wget jq pipx kitty libcap2-bin \
     nmap seclists enum4linux-ng enum4linux smbmap smbclient ldap-utils \
     netexec ffuf gobuster feroxbuster sqlmap proxychains4 xclip katana arjun nuclei \
     certipy-ad coercer evil-winrm sharphound bloodhound-ce-python bloodyad \
     docker.io docker-compose \
     nbtscan onesixtyone oscanner nikto sslscan sslyze tnscmd10g whatweb \
     dnsrecon impacket-scripts redis-tools snmp sipvicious
+
+run setcap cap_net_raw,cap_net_admin,cap_net_bind_service+eip /usr/lib/nmap/nmap
+if ! getcap /usr/lib/nmap/nmap 2>/dev/null | grep -q cap_net_raw; then
+  FAILURES+=("setcap on /usr/lib/nmap/nmap did not take -- UDP/SYN scans will need sudo")
+fi
 
 run timeout 120 nuclei -ut -duc
 
