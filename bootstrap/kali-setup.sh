@@ -244,8 +244,10 @@ EOF
 
 MARK_BEGIN="# >>> byu-cptc light-terminal colors >>>"
 MARK_END="# <<< byu-cptc light-terminal colors <<<"
-if ! grep -q "$MARK_BEGIN" "$HOME/.zshrc" 2>/dev/null; then
-  cat >> "$HOME/.zshrc" << EOF
+if [ -f "$HOME/.zshrc" ]; then
+  sed -i "/^${MARK_BEGIN}\$/,/^${MARK_END}\$/d" "$HOME/.zshrc"
+fi
+cat >> "$HOME/.zshrc" << EOF
 
 $MARK_BEGIN
 eval "\$(dircolors \$HOME/.dircolors-light)"
@@ -257,7 +259,6 @@ zle -N _xz_insert
 bindkey '^Xz' _xz_insert
 $MARK_END
 EOF
-fi
 
 if command -v xfce4-terminal >/dev/null 2>&1; then
   mkdir -p "$HOME/.config/xfce4/terminal"
