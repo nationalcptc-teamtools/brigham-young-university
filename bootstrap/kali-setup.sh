@@ -57,7 +57,10 @@ if ! getcap /usr/lib/nmap/nmap 2>/dev/null | grep -q cap_net_raw; then
   FAILURES+=("setcap on /usr/lib/nmap/nmap did not take -- UDP/SYN scans will need sudo")
 fi
 
-run timeout 120 nuclei -ut -duc
+run timeout 120 nuclei -ut
+if [ ! -d "$HOME/.local/nuclei-templates" ]; then
+  FAILURES+=("nuclei -ut did not install templates -- scans will fail until 'nuclei -ut' is rerun")
+fi
 
 run systemctl enable --now docker
 run usermod -aG docker "$TARGET_USER"
