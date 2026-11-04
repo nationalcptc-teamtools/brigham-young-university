@@ -41,10 +41,10 @@ mkdir -p "$TOOLS_DIR" "$WIN_DIR"
 mkdir -p "$HOME/.cache/pip"
 chown -R root:root "$HOME/.cache"
 
-echo "===> [1/7] Base packages"
+echo "===> [1/9] Base packages"
 run apt -y update
 run apt -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
-    install git curl wget jq pipx kitty libcap2-bin \
+    install git curl wget jq pipx kitty tmux libcap2-bin \
     nmap seclists enum4linux-ng enum4linux smbmap smbclient ldap-utils \
     netexec ffuf gobuster feroxbuster sqlmap proxychains4 xclip katana arjun nuclei \
     certipy-ad coercer evil-winrm sharphound bloodhound-ce-python bloodyad \
@@ -76,7 +76,7 @@ rm -f "$SUDOERS_TMP"
 run pipx ensurepath
 export PATH="$HOME/.local/bin:/usr/local/sbin:/usr/local/bin:$PATH"
 
-echo "===> [2/7] kitty"
+echo "===> [2/9] kitty"
 mkdir -p "$HOME/.config/kitty"
 if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/kitty.conf" ]; then
   run install -m 644 "$SCRIPT_DIR/kitty.conf" "$HOME/.config/kitty/kitty.conf"
@@ -87,7 +87,17 @@ else
 fi
 echo "kitty ready — open a new kitty window (or ctrl+shift+f5) to pick this up."
 
-echo "===> [3/7] Password spraying — TREVORspray + kerbrute"
+echo "===> [3/9] tmux"
+if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/tmux.conf" ]; then
+  run install -m 644 "$SCRIPT_DIR/tmux.conf" "$HOME/.tmux.conf"
+elif [ -n "$RAW_BASE_URL" ]; then
+  run curl -fsSL "$RAW_BASE_URL/tmux.conf" -o "$HOME/.tmux.conf"
+else
+  echo "[!] no local bootstrap/tmux.conf and no RAW_BASE_URL set -- tmux left at its default config"
+fi
+echo "tmux ready — splits/panes/windows work the same way regardless of which terminal you're stuck with."
+
+echo "===> [4/9] Password spraying — TREVORspray + kerbrute"
 run pipx install trevorspray
 
 KERBRUTE_URL=$(curl -s https://api.github.com/repos/ropnop/kerbrute/releases/latest \
@@ -99,7 +109,7 @@ else
   echo "[!] could not resolve latest kerbrute release"
 fi
 
-echo "===> [4/7] AD tooling with no Kali apt package"
+echo "===> [5/9] AD tooling with no Kali apt package"
 run pipx install git+https://github.com/garrettfoster13/pre2k
 run pipx install git+https://github.com/garrettfoster13/sccmhunter
 
@@ -162,7 +172,7 @@ for repo in Pennyw0rth/NetExec fortra/impacket; do
   fi
 done
 
-echo "===> [5/7] BloodHound CE — via Docker (SpecterOps' own recommended install path)"
+echo "===> [6/9] BloodHound CE — via Docker (SpecterOps' own recommended install path)"
 BH_DIR="$TOOLS_DIR/bloodhound"
 mkdir -p "$BH_DIR"
 BHCLI_URL=$(curl -s https://api.github.com/repos/SpecterOps/bloodhound-cli/releases/latest \
@@ -185,7 +195,7 @@ echo "    Start later with: (cd $BH_DIR && sudo bloodhound-cli up)   (stop: sudo
 echo "    Full reset if something breaks: (cd $BH_DIR && sudo bloodhound-cli down -v && sudo bloodhound-cli up)"
 echo "    UI: http://localhost:8080/ui/login"
 
-echo "===> [6/8] Useful Windows binaries -> $WIN_DIR"
+echo "===> [7/9] Useful Windows binaries -> $WIN_DIR"
 SHARP_BASE="https://raw.githubusercontent.com/Flangvik/SharpCollection/master/NetFramework_4.7_Any"
 for exe in Rubeus.exe Certify.exe Seatbelt.exe SharpUp.exe Snaffler.exe; do
   run wget -q "$SHARP_BASE/$exe" -O "$WIN_DIR/$exe"
@@ -202,12 +212,12 @@ run wget -q "https://raw.githubusercontent.com/PowerShellMafia/PowerSploit/maste
 
 WORDLIST_DIR="$HOME/wordlists"
 mkdir -p "$WORDLIST_DIR"
-echo "===> [7/8] Competition wordlists -> $WORDLIST_DIR"
+echo "===> [8/9] Competition wordlists -> $WORDLIST_DIR"
 UCI_WORDLISTS="https://raw.githubusercontent.com/nationalcptc-teamtools/University-of-California-Irvine/main/wordlists"
 run wget -q "$UCI_WORDLISTS/bff-emails.txt" -O "$WORDLIST_DIR/bff-emails.txt"
 run wget -q "$UCI_WORDLISTS/bff-usernames-all.txt" -O "$WORDLIST_DIR/bff-usernames-all.txt"
 
-echo "===> [8/8] Light-terminal colors (dark palette tuned for a WHITE background)"
+echo "===> [9/9] Light-terminal colors (dark palette tuned for a WHITE background)"
 cat > "$HOME/.dircolors-light" << 'EOF'
 RESET 0
 DIR 01;34
