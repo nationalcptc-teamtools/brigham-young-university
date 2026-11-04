@@ -2,6 +2,7 @@
 /reference/
 /wordlists/
 /scripts/
+/AGENTS.md
 
 __pycache__/
 *.pyc
