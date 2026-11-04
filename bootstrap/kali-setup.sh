@@ -237,6 +237,11 @@ if ! grep -q "$MARK_BEGIN" "$HOME/.zshrc" 2>/dev/null; then
 $MARK_BEGIN
 eval "\$(dircolors \$HOME/.dircolors-light)"
 PROMPT='%F{17}%n@%m%f %F{54}%~%f %F{22}%#%f '
+_xz_insert() {
+  LBUFFER+=' -t targets.txt --exclude-tags "dirbuster,nikto" --only-scans-dir --disable-sanity-checks --global.domain <domain> --target-timeout 60 --heartbeat 30 -m 20 -mp 6 -v'
+}
+zle -N _xz_insert
+bindkey '^Xz' _xz_insert
 $MARK_END
 EOF
 fi
