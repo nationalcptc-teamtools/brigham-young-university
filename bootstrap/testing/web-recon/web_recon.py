@@ -915,6 +915,18 @@ def parse_nuclei_output(jsonl_path):
     return findings
 
 
+def ensure_nuclei_templates(verbose=False, timeout=180):
+    templates_dir = os.path.join(os.path.expanduser("~"), ".local", "nuclei-templates")
+    if os.path.isdir(templates_dir) and os.listdir(templates_dir):
+        return True
+    log_info("nuclei templates not found — fetching (nuclei -ut)...")
+    run_subprocess_live(["nuclei", "-ut"], timeout=timeout, verbose=verbose)
+    if os.path.isdir(templates_dir) and os.listdir(templates_dir):
+        return True
+    log_warn("nuclei -ut did not install templates — scan will likely fail")
+    return False
+
+
 def run_nuclei(targets, output_dir, safe_name, verbose=False, gentle=False,
                timeout=900):
     """
@@ -926,6 +938,8 @@ def run_nuclei(targets, output_dir, safe_name, verbose=False, gentle=False,
     """
     if not targets:
         return []
+
+    ensure_nuclei_templates(verbose=verbose)
 
     out_file = os.path.join(output_dir, f"{safe_name}_nuclei.jsonl")
     with tempfile.NamedTemporaryFile(
